@@ -14,7 +14,7 @@ import {
 } from "./engine/vault.js";
 import { getNowMs, setNowMs } from "./clock.js";
 import { HttpError, badRequest, notFound } from "./lib/errors.js";
-import { presentBuilder, presentFeed, presentProject } from "./presenters.js";
+import { coinSlug, presentBuilder, presentFeed, presentProject } from "./presenters.js";
 import type { ShipStore } from "./store/memory.js";
 
 const walletSchema = z
@@ -159,6 +159,54 @@ export const buildApp = async (opts: AppOptions) => {
     });
     await persist(opts.store, builder.id, created.project, created.events);
     return presentProject(created.project, at(request));
+  });
+
+  app.get("/v1/projects", async () => {
+    const projects = await opts.store.listProjects();
+    return {
+      projects: projects
+        .slice()
+        .sort((a, b) => (b.promises[0]?.postedAtMs ?? 0) - (a.promises[0]?.postedAtMs ?? 0))
+        .map((project) => ({
+          mint: project.mint,
+          slug: coinSlug(project),
+          name: project.name,
+          symbol: project.symbol,
+          status: project.status,
+          xHandle: project.xHandle,
+          balanceSol: Number(project.balance) / 1_000_000_000,
+        })),
+    };
+  });
+
+  app.get("/v1/coins/:slug", async (request) => {
+    const { slug } = request.params as { slug: string };
+    const projects = await opts.store.listProjects();
+    const project = projects.find((item) => coinSlug(item) === slug);
+    if (!project) {
+      throw notFound("No coin with that page");
+    }
+    return presentProject(project, at(request));
+  });
+
+  app.get("/v1/projects/:mint/messages", async (request) => {
+    const { mint } = request.params as { mint: string };
+    await loadProject(opts.store, mint);
+    const messages = await opts.store.listMessages(mint, 80);
+    return { messages };
+  });
+
+  app.post("/v1/projects/:mint/messages", async (request) => {
+    const { mint } = request.params as { mint: string };
+    const body = z
+      .object({
+        wallet: walletSchema,
+        text: z.string().trim().min(1).max(280),
+      })
+      .parse(request.body);
+    await loadProject(opts.store, mint);
+    const message = await opts.store.addMessage(mint, body.wallet, body.text, at(request));
+    return { message };
   });
 
   app.get("/v1/projects/:mint", async (request) => {

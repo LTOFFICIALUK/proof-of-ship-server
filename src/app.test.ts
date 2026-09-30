@@ -96,6 +96,32 @@ describe("http e2e", () => {
     const feed = await app.inject({ method: "GET", url: "/v1/feed" });
     assert.ok(feed.json().events.length >= 2);
 
+    const coins = await app.inject({ method: "GET", url: "/v1/projects" });
+    assert.equal(coins.statusCode, 200);
+    const slug = coins.json().projects.find((item: { mint: string }) => item.mint === mint).slug;
+    const coin = await app.inject({ method: "GET", url: `/v1/coins/${slug}` });
+    assert.equal(coin.statusCode, 200);
+    assert.equal(coin.json().mint, mint);
+
+    const lockedChat = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${mint}/messages`,
+      payload: { text: "hello" },
+    });
+    assert.equal(lockedChat.statusCode, 400);
+
+    const chat = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${mint}/messages`,
+      payload: { wallet: voter, text: "holders only" },
+    });
+    assert.equal(chat.statusCode, 200);
+    const thread = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${mint}/messages`,
+    });
+    assert.equal(thread.json().messages.at(-1).text, "holders only");
+
     const health = await app.inject({ method: "GET", url: "/health" });
     assert.equal(health.json().ok, true);
   });

@@ -1,7 +1,7 @@
 import { query } from "../db.js";
 import type { EngineEvent } from "../engine/vault.js";
 import type { ProjectState } from "../engine/types.js";
-import type { BuilderRow, FeedRow, ShipStore } from "./memory.js";
+import type { BuilderRow, ChatRow, FeedRow, ShipStore } from "./memory.js";
 
 type BuilderDb = { id: string; wallet: string; x_handle: string };
 type ProjectDb = { mint: string; builder_id: string; state: ProjectState };
@@ -114,5 +114,39 @@ export const createPgStore = (): ShipStore => ({
       "SELECT mint, builder_id, state FROM projects",
     );
     return result.rows.map((row) => row.state);
+  },
+  listMessages: async (mint, limit) => {
+    const result = await query<{
+      id: string;
+      mint: string;
+      wallet: string;
+      body: string;
+      at_ms: string;
+    }>(
+      `SELECT id::text, mint, wallet, body, at_ms
+       FROM (
+         SELECT id, mint, wallet, body, at_ms
+         FROM chat_messages
+         WHERE mint = $1
+         ORDER BY id DESC
+         LIMIT $2
+       ) recent
+       ORDER BY id ASC`,
+      [mint, limit],
+    );
+    return result.rows.map((row): ChatRow => ({
+      id: row.id,
+      mint: row.mint,
+      wallet: row.wallet,
+      text: row.body,
+      atMs: Number(row.at_ms),
+    }));
+  },
+  addMessage: async (mint, wallet, text, atMs) => {
+    const result = await query<{ id: string }>(
+      "INSERT INTO chat_messages (mint, wallet, body, at_ms) VALUES ($1, $2, $3, $4) RETURNING id::text",
+      [mint, wallet, text, atMs],
+    );
+    return { id: result.rows[0].id, mint, wallet, text, atMs };
   },
 });

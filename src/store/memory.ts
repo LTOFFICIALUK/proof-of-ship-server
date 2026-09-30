@@ -16,6 +16,14 @@ export type FeedRow = {
   atMs: number;
 };
 
+export type ChatRow = {
+  id: string;
+  mint: string;
+  wallet: string;
+  text: string;
+  atMs: number;
+};
+
 export type ShipStore = {
   upsertBuilder: (wallet: string, xHandle: string) => Promise<BuilderRow>;
   getBuilderByHandle: (handle: string) => Promise<BuilderRow | null>;
@@ -26,6 +34,8 @@ export type ShipStore = {
   appendEvents: (events: EngineEvent[]) => Promise<void>;
   listFeed: (limit: number) => Promise<FeedRow[]>;
   listProjects: () => Promise<ProjectState[]>;
+  listMessages: (mint: string, limit: number) => Promise<ChatRow[]>;
+  addMessage: (mint: string, wallet: string, text: string, atMs: number) => Promise<ChatRow>;
 };
 
 export const createMemoryStore = (): ShipStore => {
@@ -35,6 +45,8 @@ export const createMemoryStore = (): ShipStore => {
   const projects = new Map<string, { builderId: string; project: ProjectState }>();
   const feed: FeedRow[] = [];
   let feedId = 1;
+  const messages: ChatRow[] = [];
+  let messageId = 1;
 
   return {
     upsertBuilder: async (wallet, xHandle) => {
@@ -92,5 +104,13 @@ export const createMemoryStore = (): ShipStore => {
     },
     listFeed: async (limit) => feed.slice(0, limit),
     listProjects: async () => [...projects.values()].map((row) => row.project),
+    listMessages: async (mint, limit) =>
+      messages.filter((row) => row.mint === mint).slice(-limit),
+    addMessage: async (mint, wallet, text, atMs) => {
+      const row = { id: String(messageId), mint, wallet, text, atMs };
+      messageId += 1;
+      messages.push(row);
+      return row;
+    },
   };
 };

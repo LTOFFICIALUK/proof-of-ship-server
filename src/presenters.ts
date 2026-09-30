@@ -4,6 +4,11 @@ import type { FeedRow } from "./store/memory.js";
 
 const lamportsToSol = (lamports: string) => Number(lamports) / 1_000_000_000;
 
+export const coinSlug = (project: Pick<ProjectState, "symbol" | "mint">) => {
+  const base = project.symbol.toLowerCase().replace(/[^a-z0-9]+/g, "") || "coin";
+  return `${base}-${project.mint.slice(0, 6).toLowerCase()}`;
+};
+
 export const presentProject = (project: ProjectState, nowMs: number) => {
   const circulating = BigInt(project.circulatingSupply);
   const quorum = (circulating * BigInt(QUORUM_BPS)) / 10_000n;
@@ -12,6 +17,7 @@ export const presentProject = (project: ProjectState, nowMs: number) => {
     : 0n;
   return {
     mint: project.mint,
+    slug: coinSlug(project),
     name: project.name,
     symbol: project.symbol,
     builderWallet: project.builderWallet,
