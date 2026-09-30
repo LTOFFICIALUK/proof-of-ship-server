@@ -1,0 +1,118 @@
+import { query } from "../db.js";
+import type { EngineEvent } from "../engine/vault.js";
+import type { ProjectState } from "../engine/types.js";
+import type { BuilderRow, FeedRow, ShipStore } from "./memory.js";
+
+type BuilderDb = { id: string; wallet: string; x_handle: string };
+type ProjectDb = { mint: string; builder_id: string; state: ProjectState };
+type EventDb = {
+  id: string;
+  mint: string;
+  kind: string;
+  detail: Record<string, string | number | boolean>;
+  at_ms: string;
+};
+
+export const createPgStore = (): ShipStore => ({
+  upsertBuilder: async (wallet, xHandle) => {
+    const handle = xHandle.replace(/^@/, "").toLowerCase();
+    const existing = await query<BuilderDb>(
+      "SELECT id, wallet, x_handle FROM builders WHERE wallet = $1",
+      [wallet],
+    );
+    if (existing.rowCount) {
+      const row = existing.rows[0];
+      await query("UPDATE builders SET x_handle = $1 WHERE id = $2", [
+        handle,
+        row.id,
+      ]);
+      return { id: row.id, wallet: row.wallet, xHandle: handle };
+    }
+    const inserted = await query<BuilderDb>(
+      "INSERT INTO builders (wallet, x_handle) VALUES ($1, $2) RETURNING id, wallet, x_handle",
+      [wallet, handle],
+    );
+    const row = inserted.rows[0];
+    return { id: row.id, wallet: row.wallet, xHandle: row.x_handle };
+  },
+  getBuilderByHandle: async (handle) => {
+    const result = await query<BuilderDb>(
+      "SELECT id, wallet, x_handle FROM builders WHERE x_handle = $1",
+      [handle.replace(/^@/, "").toLowerCase()],
+    );
+    const row = result.rows[0];
+    return row
+      ? { id: row.id, wallet: row.wallet, xHandle: row.x_handle }
+      : null;
+  },
+  getBuilderByWallet: async (wallet) => {
+    const result = await query<BuilderDb>(
+      "SELECT id, wallet, x_handle FROM builders WHERE wallet = $1",
+      [wallet],
+    );
+    const row = result.rows[0];
+    return row
+      ? { id: row.id, wallet: row.wallet, xHandle: row.x_handle }
+      : null;
+  },
+  getProject: async (mint) => {
+    const result = await query<ProjectDb>(
+      "SELECT mint, builder_id, state FROM projects WHERE mint = $1",
+      [mint],
+    );
+    return result.rows[0]?.state ?? null;
+  },
+  listProjectsByBuilder: async (builderId) => {
+    const result = await query<ProjectDb>(
+      "SELECT mint, builder_id, state FROM projects WHERE builder_id = $1 ORDER BY created_at DESC",
+      [builderId],
+    );
+    return result.rows.map((row) => row.state);
+  },
+  saveProject: async (builderId, project) => {
+    await query(
+      `INSERT INTO projects (mint, builder_id, name, symbol, status, state)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+       ON CONFLICT (mint) DO UPDATE SET
+         name = EXCLUDED.name,
+         symbol = EXCLUDED.symbol,
+         status = EXCLUDED.status,
+         state = EXCLUDED.state`,
+      [
+        project.mint,
+        builderId,
+        project.name,
+        project.symbol,
+        project.status,
+        JSON.stringify(project),
+      ],
+    );
+  },
+  appendEvents: async (events: EngineEvent[]) => {
+    for (const event of events) {
+      await query(
+        "INSERT INTO feed_events (mint, kind, detail, at_ms) VALUES ($1, $2, $3::jsonb, $4)",
+        [event.mint, event.kind, JSON.stringify(event.detail), event.atMs],
+      );
+    }
+  },
+  listFeed: async (limit) => {
+    const result = await query<EventDb>(
+      "SELECT id::text, mint, kind, detail, at_ms FROM feed_events ORDER BY id DESC LIMIT $1",
+      [limit],
+    );
+    return result.rows.map((row): FeedRow => ({
+      id: row.id,
+      mint: row.mint,
+      kind: row.kind,
+      detail: row.detail,
+      atMs: Number(row.at_ms),
+    }));
+  },
+  listProjects: async () => {
+    const result = await query<ProjectDb>(
+      "SELECT mint, builder_id, state FROM projects",
+    );
+    return result.rows.map((row) => row.state);
+  },
+});

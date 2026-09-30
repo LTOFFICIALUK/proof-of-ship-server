@@ -1,0 +1,305 @@
+import { randomBytes } from "node:crypto";
+import Fastify from "fastify";
+import cors from "@fastify/cors";
+import { z } from "zod";
+import { EngineError } from "./engine/types.js";
+import {
+  abandon,
+  airdrop,
+  appendPromise,
+  castVote,
+  crank,
+  createProject,
+  creditFees,
+} from "./engine/vault.js";
+import { HttpError, badRequest, notFound } from "./lib/errors.js";
+import { presentBuilder, presentFeed, presentProject } from "./presenters.js";
+import type { ShipStore } from "./store/memory.js";
+
+const walletSchema = z
+  .string()
+  .min(32)
+  .max(44)
+  .regex(/^[1-9A-HJ-NP-Za-km-z]+$/);
+
+const promiseSchema = z.object({
+  text: z.string().min(1).max(280),
+  deadlineMs: z.number().int().positive(),
+});
+
+const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+const fakeMint = () => {
+  const bytes = randomBytes(32);
+  let out = "";
+  for (let i = 0; i < 44; i += 1) {
+    out += BASE58[bytes[i % 32] % BASE58.length];
+  }
+  return out;
+};
+
+const loadProject = async (store: ShipStore, mint: string) => {
+  const project = await store.getProject(mint);
+  if (!project) {
+    throw notFound("No coin with that mint");
+  }
+  return project;
+};
+
+const persist = async (
+  store: ShipStore,
+  builderId: string,
+  project: ReturnType<typeof createProject>["project"],
+  events: Parameters<ShipStore["appendEvents"]>[0],
+) => {
+  await store.saveProject(builderId, project);
+  if (events.length) {
+    await store.appendEvents(events);
+  }
+};
+
+export type AppOptions = {
+  store: ShipStore;
+  allowSim: boolean;
+  frontendOrigin: string;
+  now?: () => number;
+};
+
+export const buildApp = async (opts: AppOptions) => {
+  const now = opts.now ?? (() => Date.now());
+  const app = Fastify({ logger: false, bodyLimit: 1_000_000 });
+
+  await app.register(cors, {
+    origin:
+      opts.frontendOrigin === "*"
+        ? true
+        : opts.frontendOrigin.split(",").map((item) => item.trim()),
+  });
+
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof HttpError) {
+      return reply.status(error.statusCode).send({
+        error: { code: error.code, message: error.message },
+      });
+    }
+    if (error instanceof EngineError) {
+      return reply.status(400).send({
+        error: { code: error.code, message: error.message },
+      });
+    }
+    if (error instanceof z.ZodError) {
+      return reply.status(400).send({
+        error: { code: "BAD_REQUEST", message: error.issues[0]?.message ?? "Bad request" },
+      });
+    }
+    const message = error instanceof Error ? error.message : "Internal server error";
+    return reply.status(500).send({
+      error: { code: "INTERNAL", message },
+    });
+  });
+
+  app.get("/health", async () => ({
+    ok: true,
+    service: "proof-of-ship-server",
+    time: new Date().toISOString(),
+  }));
+
+  app.post("/v1/builders", async (request) => {
+    const body = z
+      .object({
+        wallet: walletSchema,
+        xHandle: z.string().min(1).max(32),
+      })
+      .parse(request.body);
+    try {
+      const builder = await opts.store.upsertBuilder(body.wallet, body.xHandle);
+      return builder;
+    } catch {
+      throw badRequest("That X handle is already in use", "HANDLE_TAKEN");
+    }
+  });
+
+  app.post("/v1/projects", async (request) => {
+    const body = z
+      .object({
+        wallet: walletSchema,
+        xHandle: z.string().min(1).max(32),
+        name: z.string().min(1).max(32),
+        symbol: z.string().min(1).max(10),
+        promises: z.array(promiseSchema).min(1).max(20),
+      })
+      .parse(request.body);
+
+    const builder = await opts.store.upsertBuilder(body.wallet, body.xHandle);
+    const existing = await opts.store.listProjectsByBuilder(builder.id);
+    if (existing.some((project) => project.status === "active")) {
+      throw badRequest("You already have an active launch", "ACTIVE_LAUNCH");
+    }
+
+    const created = createProject({
+      mint: fakeMint(),
+      name: body.name,
+      symbol: body.symbol,
+      builderWallet: body.wallet,
+      xHandle: body.xHandle,
+      nowMs: now(),
+      promises: body.promises,
+    });
+    await persist(opts.store, builder.id, created.project, created.events);
+    return presentProject(created.project, now());
+  });
+
+  app.get("/v1/projects/:mint", async (request) => {
+    const { mint } = request.params as { mint: string };
+    const project = await loadProject(opts.store, mint);
+    return presentProject(project, now());
+  });
+
+  app.get("/v1/builders/:handle", async (request) => {
+    const { handle } = request.params as { handle: string };
+    const builder = await opts.store.getBuilderByHandle(handle);
+    if (!builder) {
+      throw notFound("No builder with that handle");
+    }
+    const projects = await opts.store.listProjectsByBuilder(builder.id);
+    return presentBuilder(builder.xHandle, builder.wallet, projects);
+  });
+
+  app.get("/v1/feed", async () => {
+    const rows = await opts.store.listFeed(50);
+    return { events: presentFeed(rows) };
+  });
+
+  app.get("/v1/badge/:mint.svg", async (request, reply) => {
+    const { mint } = request.params as { mint: string };
+    const project = await loadProject(opts.store, mint);
+    const last = [...project.promises].reverse().find((item) =>
+      ["paid", "burned"].includes(item.status),
+    );
+    const label = last
+      ? last.status === "paid"
+        ? "Last vote: Pay"
+        : "Last vote: Burn"
+      : "Vote pending";
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="36"><rect width="220" height="36" rx="6" fill="#111"/><text x="12" y="24" fill="#f4f0e6" font-family="ui-sans-serif" font-size="14">${project.symbol} · ${label}</text></svg>`;
+    return reply.type("image/svg+xml").send(svg);
+  });
+
+  app.post("/v1/projects/:mint/promises", async (request) => {
+    const { mint } = request.params as { mint: string };
+    const body = z
+      .object({
+        wallet: walletSchema,
+        text: z.string().min(1).max(280),
+        deadlineMs: z.number().int().positive(),
+      })
+      .parse(request.body);
+    const project = await loadProject(opts.store, mint);
+    if (project.builderWallet !== body.wallet) {
+      throw badRequest("Only the builder can add a promise", "FORBIDDEN");
+    }
+    const builder = await opts.store.getBuilderByWallet(body.wallet);
+    if (!builder) {
+      throw notFound("Builder missing");
+    }
+    const events = appendPromise(project, body.text, body.deadlineMs, now());
+    await persist(opts.store, builder.id, project, events);
+    return presentProject(project, now());
+  });
+
+  app.post("/v1/projects/:mint/vote", async (request) => {
+    const { mint } = request.params as { mint: string };
+    const body = z
+      .object({
+        wallet: walletSchema,
+        side: z.enum(["pay", "burn"]),
+        amount: z.string().regex(/^[0-9]+$/),
+      })
+      .parse(request.body);
+    const project = await loadProject(opts.store, mint);
+    const builder = await opts.store.getBuilderByWallet(project.builderWallet);
+    if (!builder) {
+      throw notFound("Builder missing");
+    }
+    crank(project, now());
+    castVote(project, body.wallet, body.side, BigInt(body.amount));
+    await persist(opts.store, builder.id, project, []);
+    return presentProject(project, now());
+  });
+
+  app.post("/v1/projects/:mint/abandon", async (request) => {
+    const { mint } = request.params as { mint: string };
+    const body = z.object({ wallet: walletSchema }).parse(request.body);
+    const project = await loadProject(opts.store, mint);
+    if (project.builderWallet !== body.wallet) {
+      throw badRequest("Only the builder can abandon", "FORBIDDEN");
+    }
+    const builder = await opts.store.getBuilderByWallet(body.wallet);
+    if (!builder) {
+      throw notFound("Builder missing");
+    }
+    const events = abandon(project, now());
+    events.push(...crank(project, now()));
+    await persist(opts.store, builder.id, project, events);
+    return presentProject(project, now());
+  });
+
+  app.post("/v1/crank", async () => {
+    const projects = await opts.store.listProjects();
+    let count = 0;
+    for (const project of projects) {
+      const builder = await opts.store.getBuilderByWallet(project.builderWallet);
+      if (!builder) {
+        continue;
+      }
+      const events = crank(project, now());
+      if (events.length) {
+        count += events.length;
+        await persist(opts.store, builder.id, project, events);
+      } else {
+        await persist(opts.store, builder.id, project, []);
+      }
+    }
+    return { ok: true, events: count };
+  });
+
+  if (opts.allowSim) {
+    app.post("/v1/sim/fees", async (request) => {
+      const body = z
+        .object({
+          mint: z.string(),
+          lamports: z.string().regex(/^[0-9]+$/),
+        })
+        .parse(request.body);
+      const project = await loadProject(opts.store, body.mint);
+      const builder = await opts.store.getBuilderByWallet(project.builderWallet);
+      if (!builder) {
+        throw notFound("Builder missing");
+      }
+      const events = creditFees(project, BigInt(body.lamports), now());
+      events.push(...crank(project, now()));
+      await persist(opts.store, builder.id, project, events);
+      return presentProject(project, now());
+    });
+
+    app.post("/v1/sim/airdrop", async (request) => {
+      const body = z
+        .object({
+          mint: z.string(),
+          wallet: walletSchema,
+          amount: z.string().regex(/^[0-9]+$/),
+        })
+        .parse(request.body);
+      const project = await loadProject(opts.store, body.mint);
+      const builder = await opts.store.getBuilderByWallet(project.builderWallet);
+      if (!builder) {
+        throw notFound("Builder missing");
+      }
+      airdrop(project, body.wallet, BigInt(body.amount));
+      await persist(opts.store, builder.id, project, []);
+      return presentProject(project, now());
+    });
+  }
+
+  return app;
+};
