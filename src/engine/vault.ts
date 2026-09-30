@@ -481,6 +481,39 @@ export const finalizeVote = (
   ];
 };
 
+export const finalizeFromNet = (
+  project: ProjectState,
+  nowMs: number,
+  payWins: boolean,
+): EngineEvent[] => {
+  const vote = project.vote;
+  if (!vote || nowMs < vote.endMs) {
+    return [];
+  }
+  const promise = project.promises.find((item) => item.idx === vote.promiseIdx);
+  if (!promise) {
+    throw new EngineError("VOTE", "Missing promise for this vote");
+  }
+  unlockVotes(project);
+  if (payWins) {
+    promise.status = "paid";
+    settlePay(project);
+  } else {
+    promise.status = "burned";
+    settleBurn(project);
+  }
+  afterVote(project, promise.idx, nowMs);
+  assertInvariant(project);
+  return [
+    {
+      kind: payWins ? "vote_pay" : "vote_burn",
+      atMs: nowMs,
+      mint: project.mint,
+      detail: { idx: promise.idx, net: payWins ? "up" : "down" },
+    },
+  ];
+};
+
 export const executeBuybackBurn = (
   project: ProjectState,
   nowMs: number,

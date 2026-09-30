@@ -126,6 +126,49 @@ describe("http e2e", () => {
     assert.equal(health.json().ok, true);
   });
 
+  it("weights holder votes by supply", async () => {
+    const builder = "2xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+    const launched = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      payload: {
+        wallet: builder,
+        xHandle: "paydev",
+        name: "Pay Coin",
+        symbol: "PAY",
+        promises: [{ text: "Ship the demo", deadlineMs: t0 + 10 * DAY }],
+      },
+    });
+    assert.equal(launched.statusCode, 200);
+    const mint = launched.json().mint;
+    const two = (DEFAULT_SUPPLY * 200n) / 10_000n;
+    const one = (DEFAULT_SUPPLY * 100n) / 10_000n;
+    const other = "4xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+    await app.inject({
+      method: "POST",
+      url: "/v1/sim/airdrop",
+      payload: { mint, wallet: voter, amount: String(two) },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/sim/airdrop",
+      payload: { mint, wallet: other, amount: String(one) },
+    });
+    const up = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${mint}/promises/0/vote`,
+      payload: { wallet: voter, side: "up" },
+    });
+    assert.equal(up.statusCode, 200);
+    const down = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${mint}/promises/0/vote`,
+      payload: { wallet: other, side: "down" },
+    });
+    assert.equal(down.statusCode, 200);
+    assert.equal(down.json().promises[0].netPct, 1);
+  });
+
   it("rejects a launch with no promises", async () => {
     const res = await app.inject({
       method: "POST",

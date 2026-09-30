@@ -24,6 +24,13 @@ export type ChatRow = {
   atMs: number;
 };
 
+export type HolderVoteRow = {
+  mint: string;
+  promiseIdx: number;
+  wallet: string;
+  side: "up" | "down";
+};
+
 export type ShipStore = {
   upsertBuilder: (wallet: string, xHandle: string) => Promise<BuilderRow>;
   getBuilderByHandle: (handle: string) => Promise<BuilderRow | null>;
@@ -36,6 +43,13 @@ export type ShipStore = {
   listProjects: () => Promise<ProjectState[]>;
   listMessages: (mint: string, limit: number) => Promise<ChatRow[]>;
   addMessage: (mint: string, wallet: string, text: string, atMs: number) => Promise<ChatRow>;
+  listHolderVotes: (mint: string) => Promise<HolderVoteRow[]>;
+  upsertHolderVote: (
+    mint: string,
+    promiseIdx: number,
+    wallet: string,
+    side: "up" | "down",
+  ) => Promise<void>;
 };
 
 export const createMemoryStore = (): ShipStore => {
@@ -47,6 +61,7 @@ export const createMemoryStore = (): ShipStore => {
   let feedId = 1;
   const messages: ChatRow[] = [];
   let messageId = 1;
+  const holderVotes: HolderVoteRow[] = [];
 
   return {
     upsertBuilder: async (wallet, xHandle) => {
@@ -111,6 +126,17 @@ export const createMemoryStore = (): ShipStore => {
       messageId += 1;
       messages.push(row);
       return row;
+    },
+    listHolderVotes: async (mint) => holderVotes.filter((row) => row.mint === mint),
+    upsertHolderVote: async (mint, promiseIdx, wallet, side) => {
+      const existing = holderVotes.find(
+        (row) => row.mint === mint && row.promiseIdx === promiseIdx && row.wallet === wallet,
+      );
+      if (existing) {
+        existing.side = side;
+        return;
+      }
+      holderVotes.push({ mint, promiseIdx, wallet, side });
     },
   };
 };

@@ -14,7 +14,9 @@ import {
 } from "./engine/vault.js";
 import { getNowMs, setNowMs } from "./clock.js";
 import { HttpError, badRequest, notFound } from "./lib/errors.js";
+import { balanceOf, loadHoldings, tallyVotes } from "./holdings.js";
 import { coinSlug, presentBuilder, presentFeed, presentProject } from "./presenters.js";
+import { advanceProject } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
 
 const walletSchema = z
@@ -45,6 +47,36 @@ const loadProject = async (store: ShipStore, mint: string) => {
     throw notFound("No coin with that mint");
   }
   return project;
+};
+
+const presentLive = async (
+  store: ShipStore,
+  project: Awaited<ReturnType<ShipStore["getProject"]>> & object,
+  nowMs: number,
+  viewer?: string,
+) => {
+  const view = presentProject(project, nowMs);
+  const votes = await store.listHolderVotes(project.mint);
+  const holdings = await loadHoldings(
+    project,
+    [...new Set(votes.map((row) => row.wallet))],
+  );
+  return {
+    ...view,
+    promises: view.promises.map((item) => {
+      const rows = votes.filter((row) => row.promiseIdx === item.idx);
+      const tally = holdings.ok
+        ? tallyVotes(rows, holdings.balances, holdings.supply)
+        : { upPct: 0, downPct: 0, netPct: 0 };
+      return {
+        ...item,
+        upPct: tally.upPct,
+        downPct: tally.downPct,
+        netPct: holdings.ok ? tally.netPct : null,
+        yourSide: rows.find((row) => row.wallet === viewer)?.side ?? null,
+      };
+    }),
+  };
 };
 
 const persist = async (
@@ -186,7 +218,33 @@ export const buildApp = async (opts: AppOptions) => {
     if (!project) {
       throw notFound("No coin with that page");
     }
-    return presentProject(project, at(request));
+    const viewer = (request.query as { wallet?: string }).wallet;
+    return presentLive(opts.store, project, at(request), viewer);
+  });
+
+  app.post("/v1/projects/:mint/promises/:idx/vote", async (request) => {
+    const { mint, idx } = request.params as { mint: string; idx: string };
+    const body = z
+      .object({
+        wallet: walletSchema,
+        side: z.enum(["up", "down"]),
+      })
+      .parse(request.body);
+    const promiseIdx = Number(idx);
+    const project = await loadProject(opts.store, mint);
+    const promise = project.promises.find((item) => item.idx === promiseIdx);
+    if (!promise || !["pending", "vote_open", "no_quorum"].includes(promise.status)) {
+      throw badRequest("That promise is not open for votes");
+    }
+    const held = await balanceOf(project, body.wallet);
+    if (!held.ok) {
+      throw badRequest("Could not read your balance");
+    }
+    if (held.amount <= 0n) {
+      throw badRequest("You need to hold this coin to vote");
+    }
+    await opts.store.upsertHolderVote(mint, promiseIdx, body.wallet, body.side);
+    return presentLive(opts.store, project, at(request), body.wallet);
   });
 
   app.get("/v1/projects/:mint/messages", async (request) => {
@@ -212,7 +270,8 @@ export const buildApp = async (opts: AppOptions) => {
   app.get("/v1/projects/:mint", async (request) => {
     const { mint } = request.params as { mint: string };
     const project = await loadProject(opts.store, mint);
-    return presentProject(project, at(request));
+    const viewer = (request.query as { wallet?: string }).wallet;
+    return presentLive(opts.store, project, at(request), viewer);
   });
 
   app.get("/v1/builders/:handle", async (request) => {
@@ -317,7 +376,7 @@ export const buildApp = async (opts: AppOptions) => {
       if (!builder) {
         continue;
       }
-      const events = crank(project, at(request));
+      const events = await advanceProject(opts.store, project, at(request));
       if (events.length) {
         count += events.length;
         await persist(opts.store, builder.id, project, events);

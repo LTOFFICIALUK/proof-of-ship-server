@@ -1,7 +1,7 @@
 import { query } from "../db.js";
 import type { EngineEvent } from "../engine/vault.js";
 import type { ProjectState } from "../engine/types.js";
-import type { BuilderRow, ChatRow, FeedRow, ShipStore } from "./memory.js";
+import type { BuilderRow, ChatRow, FeedRow, HolderVoteRow, ShipStore } from "./memory.js";
 
 type BuilderDb = { id: string; wallet: string; x_handle: string };
 type ProjectDb = { mint: string; builder_id: string; state: ProjectState };
@@ -148,5 +148,30 @@ export const createPgStore = (): ShipStore => ({
       [mint, wallet, text, atMs],
     );
     return { id: result.rows[0].id, mint, wallet, text, atMs };
+  },
+  listHolderVotes: async (mint) => {
+    const result = await query<{
+      mint: string;
+      promise_idx: number;
+      wallet: string;
+      side: "up" | "down";
+    }>(
+      "SELECT mint, promise_idx, wallet, side FROM holder_votes WHERE mint = $1",
+      [mint],
+    );
+    return result.rows.map((row): HolderVoteRow => ({
+      mint: row.mint,
+      promiseIdx: Number(row.promise_idx),
+      wallet: row.wallet,
+      side: row.side === "down" ? "down" : "up",
+    }));
+  },
+  upsertHolderVote: async (mint, promiseIdx, wallet, side) => {
+    await query(
+      `INSERT INTO holder_votes (mint, promise_idx, wallet, side)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (mint, promise_idx, wallet) DO UPDATE SET side = EXCLUDED.side`,
+      [mint, promiseIdx, wallet, side],
+    );
   },
 });

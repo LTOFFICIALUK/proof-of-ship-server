@@ -1,6 +1,6 @@
 import { nowMs } from "../clock.js";
-import { crank } from "../engine/vault.js";
 import { logger } from "../logger.js";
+import { advanceProject } from "../settle.js";
 import type { ShipStore } from "../store/memory.js";
 
 export const runCrank = async (store: ShipStore) => {
@@ -12,7 +12,7 @@ export const runCrank = async (store: ShipStore) => {
     if (!builder) {
       continue;
     }
-    const next = crank(project, at);
+    const next = await advanceProject(store, project, at);
     if (next.length) {
       events += next.length;
       await store.saveProject(builder.id, project);
