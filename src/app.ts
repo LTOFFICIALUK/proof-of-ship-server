@@ -15,6 +15,7 @@ import {
 import { getNowMs, setNowMs } from "./clock.js";
 import { HttpError, badRequest, notFound } from "./lib/errors.js";
 import { balanceOf, loadHoldings, tallyVotes } from "./holdings.js";
+import { loadMarket } from "./market.js";
 import { coinSlug, presentBuilder, presentFeed, presentProject } from "./presenters.js";
 import { advanceProject } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
@@ -61,8 +62,10 @@ const presentLive = async (
     project,
     [...new Set(votes.map((row) => row.wallet))],
   );
+  const market = await loadMarket(project.mint);
   return {
     ...view,
+    market,
     promises: view.promises.map((item) => {
       const rows = votes.filter((row) => row.promiseIdx === item.idx);
       const tally = holdings.ok
