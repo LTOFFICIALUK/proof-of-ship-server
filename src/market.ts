@@ -136,7 +136,7 @@ const loadFresh = async (mint: string): Promise<MarketSnapshot> => {
     marketCapUsd: num(pump?.usd_market_cap) ?? num(pair?.marketCap),
     athUsd: num(pump?.ath_market_cap),
     volumeUsd: num(pair?.volume?.h24) ?? num(pump?.volume_1h_usd),
-    holders,
+    holders: pump || pairs.length ? holders : null,
   };
 };
 
