@@ -249,9 +249,14 @@ export const buildApp = async (opts: AppOptions) => {
 
   app.get("/v1/projects/:mint/messages", async (request) => {
     const { mint } = request.params as { mint: string };
-    await loadProject(opts.store, mint);
+    const project = await loadProject(opts.store, mint);
+    const viewer = (request.query as { wallet?: string }).wallet;
     const messages = await opts.store.listMessages(mint, 80);
-    return { messages };
+    if (!viewer) {
+      return { messages, holds: false };
+    }
+    const held = await balanceOf(project, viewer);
+    return { messages, holds: held.ok ? held.amount > 0n : null };
   });
 
   app.post("/v1/projects/:mint/messages", async (request) => {
@@ -262,7 +267,14 @@ export const buildApp = async (opts: AppOptions) => {
         text: z.string().trim().min(1).max(280),
       })
       .parse(request.body);
-    await loadProject(opts.store, mint);
+    const project = await loadProject(opts.store, mint);
+    const held = await balanceOf(project, body.wallet);
+    if (!held.ok) {
+      throw badRequest("Could not read your balance");
+    }
+    if (held.amount <= 0n) {
+      throw badRequest("Hold some supply to send");
+    }
     const message = await opts.store.addMessage(mint, body.wallet, body.text, at(request));
     return { message };
   });

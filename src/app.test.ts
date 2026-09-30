@@ -121,6 +121,12 @@ describe("http e2e", () => {
       url: `/v1/projects/${mint}/messages`,
     });
     assert.equal(thread.json().messages.at(-1).text, "holders only");
+    const empty = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${mint}/messages`,
+      payload: { wallet: "3xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", text: "no coins" },
+    });
+    assert.equal(empty.statusCode, 400);
 
     const health = await app.inject({ method: "GET", url: "/health" });
     assert.equal(health.json().ok, true);
