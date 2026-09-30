@@ -126,7 +126,18 @@ const loadChain = async (mint: string) => {
   return entry;
 };
 
+const simHoldings = (project: ProjectState, wallets: string[]) => {
+  const balances = new Map<string, bigint>();
+  for (const wallet of wallets) {
+    balances.set(wallet, BigInt(project.balances[wallet] ?? "0"));
+  }
+  return { ok: true as const, supply: BigInt(project.circulatingSupply), balances };
+};
+
 export const loadHoldings = async (project: ProjectState, wallets: string[]) => {
+  if (!wallets.length) {
+    return simHoldings(project, wallets);
+  }
   if (heliusUrl()) {
     try {
       const chain = await loadChain(project.mint);
@@ -135,7 +146,11 @@ export const loadHoldings = async (project: ProjectState, wallets: string[]) => 
         balances.set(wallet, chain.byOwner.get(wallet) ?? 0n);
       }
       return { ok: true, supply: chain.supply, balances };
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message.includes("could not find account")) {
+        return simHoldings(project, wallets);
+      }
       return {
         ok: false,
         supply: BigInt(project.circulatingSupply),
@@ -144,11 +159,7 @@ export const loadHoldings = async (project: ProjectState, wallets: string[]) => 
     }
   }
 
-  const balances = new Map<string, bigint>();
-  for (const wallet of wallets) {
-    balances.set(wallet, BigInt(project.balances[wallet] ?? "0"));
-  }
-  return { ok: true, supply: BigInt(project.circulatingSupply), balances };
+  return simHoldings(project, wallets);
 };
 
 export const balanceOf = async (project: ProjectState, wallet: string) => {
