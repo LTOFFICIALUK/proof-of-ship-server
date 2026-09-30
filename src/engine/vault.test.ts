@@ -227,4 +227,22 @@ describe("abandon", () => {
   });
 });
 
+describe("tie", () => {
+  it("burns when pay and burn weights are equal", () => {
+    const project = launch();
+    creditFees(project, 10_000n, t0);
+    const a = "TiePay111111111111111111111111111111111111";
+    const b = "TieBurn11111111111111111111111111111111111";
+    const half = quorumAmount() / 2n;
+    airdrop(project, a, half);
+    airdrop(project, b, half);
+    openVote(project, t0 + 3 * DAY);
+    castVote(project, a, "pay", half);
+    castVote(project, b, "burn", half);
+    finalizeVote(project, t0 + 3 * DAY + VOTE_WINDOW_MS);
+    assert.equal(project.promises[0].status, "burned");
+    assert.equal(project.burnBucket, "7500");
+  });
+});
+
 void VAULT_BPS;

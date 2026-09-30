@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import { z } from "zod";
 import { EngineError } from "./engine/types.js";
@@ -12,6 +12,7 @@ import {
   createProject,
   creditFees,
 } from "./engine/vault.js";
+import { getNowMs, setNowMs } from "./clock.js";
 import { HttpError, badRequest, notFound } from "./lib/errors.js";
 import { presentBuilder, presentFeed, presentProject } from "./presenters.js";
 import type { ShipStore } from "./store/memory.js";
@@ -67,6 +68,17 @@ export type AppOptions = {
 
 export const buildApp = async (opts: AppOptions) => {
   const now = opts.now ?? (() => Date.now());
+  const at = (request: FastifyRequest) => {
+    if (opts.allowSim) {
+      const header = request.headers["x-sim-now"];
+      const raw = Array.isArray(header) ? header[0] : header;
+      const value = raw ? Number(raw) : NaN;
+      if (Number.isFinite(value) && value > 0) {
+        return value;
+      }
+    }
+    return now();
+  };
   const app = Fastify({ logger: false, bodyLimit: 1_000_000 });
 
   await app.register(cors, {
@@ -142,17 +154,17 @@ export const buildApp = async (opts: AppOptions) => {
       symbol: body.symbol,
       builderWallet: body.wallet,
       xHandle: body.xHandle,
-      nowMs: now(),
+      nowMs: at(request),
       promises: body.promises,
     });
     await persist(opts.store, builder.id, created.project, created.events);
-    return presentProject(created.project, now());
+    return presentProject(created.project, at(request));
   });
 
   app.get("/v1/projects/:mint", async (request) => {
     const { mint } = request.params as { mint: string };
     const project = await loadProject(opts.store, mint);
-    return presentProject(project, now());
+    return presentProject(project, at(request));
   });
 
   app.get("/v1/builders/:handle", async (request) => {
@@ -202,9 +214,9 @@ export const buildApp = async (opts: AppOptions) => {
     if (!builder) {
       throw notFound("Builder missing");
     }
-    const events = appendPromise(project, body.text, body.deadlineMs, now());
+    const events = appendPromise(project, body.text, body.deadlineMs, at(request));
     await persist(opts.store, builder.id, project, events);
-    return presentProject(project, now());
+    return presentProject(project, at(request));
   });
 
   app.post("/v1/projects/:mint/vote", async (request) => {
@@ -221,10 +233,10 @@ export const buildApp = async (opts: AppOptions) => {
     if (!builder) {
       throw notFound("Builder missing");
     }
-    crank(project, now());
+    crank(project, at(request));
     castVote(project, body.wallet, body.side, BigInt(body.amount));
     await persist(opts.store, builder.id, project, []);
-    return presentProject(project, now());
+    return presentProject(project, at(request));
   });
 
   app.post("/v1/projects/:mint/abandon", async (request) => {
@@ -238,21 +250,26 @@ export const buildApp = async (opts: AppOptions) => {
     if (!builder) {
       throw notFound("Builder missing");
     }
-    const events = abandon(project, now());
-    events.push(...crank(project, now()));
+    const events = abandon(project, at(request));
+    events.push(...crank(project, at(request)));
     await persist(opts.store, builder.id, project, events);
-    return presentProject(project, now());
+    return presentProject(project, at(request));
   });
 
-  app.post("/v1/crank", async () => {
-    const projects = await opts.store.listProjects();
+  app.post("/v1/crank", async (request) => {
+    const body = z
+      .object({ mint: z.string().optional() })
+      .parse(request.body && typeof request.body === "object" ? request.body : {});
+    const projects = (await opts.store.listProjects()).filter(
+      (project) => !body.mint || project.mint === body.mint,
+    );
     let count = 0;
     for (const project of projects) {
       const builder = await opts.store.getBuilderByWallet(project.builderWallet);
       if (!builder) {
         continue;
       }
-      const events = crank(project, now());
+      const events = crank(project, at(request));
       if (events.length) {
         count += events.length;
         await persist(opts.store, builder.id, project, events);
@@ -276,10 +293,10 @@ export const buildApp = async (opts: AppOptions) => {
       if (!builder) {
         throw notFound("Builder missing");
       }
-      const events = creditFees(project, BigInt(body.lamports), now());
-      events.push(...crank(project, now()));
+      const events = creditFees(project, BigInt(body.lamports), at(request));
+      events.push(...crank(project, at(request)));
       await persist(opts.store, builder.id, project, events);
-      return presentProject(project, now());
+      return presentProject(project, at(request));
     });
 
     app.post("/v1/sim/airdrop", async (request) => {
@@ -297,7 +314,22 @@ export const buildApp = async (opts: AppOptions) => {
       }
       airdrop(project, body.wallet, BigInt(body.amount));
       await persist(opts.store, builder.id, project, []);
-      return presentProject(project, now());
+      return presentProject(project, at(request));
+    });
+
+    app.get("/v1/sim/clock", async (request) => ({
+      nowMs: at(request),
+      override: getNowMs(),
+    }));
+
+    app.post("/v1/sim/clock", async (request) => {
+      const body = z
+        .object({
+          nowMs: z.number().int().positive().nullable(),
+        })
+        .parse(request.body);
+      setNowMs(body.nowMs);
+      return { nowMs: now(), override: getNowMs() };
     });
   }
 

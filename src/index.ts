@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.js";
+import { nowMs } from "./clock.js";
 import { migrate, pool } from "./db.js";
 import { logger } from "./logger.js";
 import { buildApp } from "./app.js";
@@ -13,6 +14,7 @@ const main = async () => {
     store,
     allowSim: config.ALLOW_SIM,
     frontendOrigin: config.FRONTEND_ORIGIN,
+    now: nowMs,
   });
   const address = await app.listen({ host: "0.0.0.0", port: config.PORT });
   logger.info("server listening", { address });
