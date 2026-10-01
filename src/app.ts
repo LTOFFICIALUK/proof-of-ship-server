@@ -209,7 +209,11 @@ export const buildApp = async (opts: AppOptions) => {
           symbol: project.symbol,
           status: project.status,
           xHandle: project.xHandle,
+          builderWallet: project.builderWallet,
+          promise: project.promises[0]?.text ?? "",
           balanceSol: Number(project.balance) / 1_000_000_000,
+          releasedSol: Number(project.released) / 1_000_000_000,
+          burnedSol: Number(project.burned) / 1_000_000_000,
         })),
     };
   });
