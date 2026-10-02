@@ -506,7 +506,7 @@ export const buildApp = async (opts: AppOptions) => {
       rules: [
         "The fee split cannot be changed by you or by us.",
         "You cannot withdraw the vault.",
-        "A pay vote pays 60 percent of the vault to you in SOL, and unlocks 20 percent of the remaining locked bag. A burn vote spends 60 percent to buy $POS. The rest stays. No next promise in 7 days spends leftover vault SOL on $POS.",
+        "A pay vote pays 60 percent of the vault to you in SOL, and unlocks 20 percent of the remaining bag. The bag sits in a lock, not in your wallet. A burn vote spends 60 percent to buy $POS. The rest stays. No next promise in 7 days spends leftover vault SOL on $POS.",
       ],
     };
   });

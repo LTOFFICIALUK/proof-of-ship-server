@@ -33,7 +33,7 @@ The brief is right that the vault address is permanent once admin is revoked, so
 
 Checked 3 Oct 2026.
 
-A Pay vote credits 60 percent of the vault to the builder in SOL on the ledger and unlocks 20 percent of the remaining dev bag. It does not buy $POS.
+A Pay vote credits 60 percent of the vault to the builder in SOL on the ledger and unlocks 20 percent of the remaining bag. The bag sits in a lock, not in the builder wallet. It does not buy $POS.
 
 A burn vote (holders vote not to pay) moves 60 percent of the vault into a $POS bucket. The mint is `H49xNgg1hMV6LqXK6if2g8CYnrvp7CxQ5SJTnDRwPoS`. The crank asks Jupiter for a quote and retries when the quote fails. A quote does not spend the bucket and does not mark tokens as bought. Jupiter returned `TOKEN_NOT_TRADABLE` for that mint. `getAccountInfo` on mainnet and devnet returned no account. No swap is sent.
 
