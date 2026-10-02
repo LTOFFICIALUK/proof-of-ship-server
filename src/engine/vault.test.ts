@@ -67,7 +67,7 @@ describe("createProject", () => {
     );
   });
 
-  it("rejects a deadline past 14 days", () => {
+  it("rejects a deadline past 30 days", () => {
     assert.throws(
       () =>
         launch({
@@ -75,7 +75,7 @@ describe("createProject", () => {
             { text: "too late", deadlineMs: t0 + MAX_DEADLINE_MS + 1 },
           ],
         }),
-      /14 days/i,
+      /30 days/i,
     );
   });
 });

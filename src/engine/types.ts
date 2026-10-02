@@ -10,8 +10,8 @@ export const DEFAULT_SUPPLY = 1_000_000_000_000_000n;
 export const VOTE_WINDOW_MS = 48 * 60 * 60 * 1000;
 export const EXTEND_MS = 24 * 60 * 60 * 1000;
 export const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
-export const MIN_DEADLINE_MS = 3 * 24 * 60 * 60 * 1000;
-export const MAX_DEADLINE_MS = 14 * 24 * 60 * 60 * 1000;
+export const MIN_DEADLINE_MS = 30 * 60 * 1000;
+export const MAX_DEADLINE_MS = 30 * 24 * 60 * 60 * 1000;
 export const SLICE_BPS = 6_000;
 
 export type ProjectStatus = "active" | "lapsed" | "abandoned";

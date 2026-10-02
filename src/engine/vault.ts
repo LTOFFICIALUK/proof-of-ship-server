@@ -121,12 +121,12 @@ export const createProject = (input: {
       throw new EngineError("EMPTY_PROMISE", "A promise cannot be empty");
     }
     if (raw.deadlineMs < input.nowMs + MIN_DEADLINE_MS) {
-      throw new EngineError("DEADLINE", "Deadline must be at least 3 days out");
+      throw new EngineError("DEADLINE", "Deadline must be at least 30 minutes out");
     }
     if (raw.deadlineMs > input.nowMs + MAX_DEADLINE_MS) {
       throw new EngineError(
         "DEADLINE",
-        "Deadline must be within 14 days of posting",
+        "Deadline must be within 30 days of posting",
       );
     }
     if (raw.deadlineMs <= previousDeadline) {
@@ -270,7 +270,7 @@ export const appendPromise = (
     throw new EngineError("EMPTY_PROMISE", "A promise cannot be empty");
   }
   if (deadlineMs < nowMs + MIN_DEADLINE_MS) {
-    throw new EngineError("DEADLINE", "Deadline must be at least 3 days out");
+    throw new EngineError("DEADLINE", "Deadline must be at least 30 minutes out");
   }
   if (project.promises.some((item) => item.status === "pending" || item.status === "vote_open")) {
     throw new EngineError("OPEN_PROMISE", "Finish the open promise before posting the next one");
@@ -278,7 +278,7 @@ export const appendPromise = (
   if (deadlineMs > nowMs + MAX_DEADLINE_MS) {
     throw new EngineError(
       "DEADLINE",
-      "Deadline must be within 14 days of posting",
+      "Deadline must be within 30 days of posting",
     );
   }
   const previous = lastPromise(project);
