@@ -125,8 +125,14 @@ export type ProjectState = {
   };
   chain?: {
     vault: string;
+    platform?: string;
+    crank?: string;
     feeConfig: string;
     revokeSig: string;
+    paid?: string;
+    posSpent?: string;
+    burnSpent?: string;
+    lastInflowSig?: string;
   } | null;
 };
 

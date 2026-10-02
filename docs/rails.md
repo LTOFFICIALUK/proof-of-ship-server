@@ -1,42 +1,34 @@
-# Rail spikes
-
-Checked 2 Oct 2026 against the public Pump fees docs. No devnet or mainnet transaction was sent. A throwaway coin needs a funded signer, and this pass stops before `ship_vault`.
-
-Sources: [CREATOR_FEE_SHARING.md](https://github.com/pump-fun/pump-public-docs/blob/main/docs/instructions/CREATOR_FEE_SHARING.md) and the Pump fees IDL notes.
-
-## What the docs say
-
-1. `create_fee_sharing_config` creates a sharing config for the mint. The first shareholder list is the creator at 10,000 bps. It points the bonding curve creator, and the AMM coin creator after graduation, at that config.
-2. `update_fee_shares_v2` replaces that list and sets `admin_revoked = true` in the same instruction. A second update should fail. Shares must be unique, each above 0, at most 10 addresses, and sum to exactly 10,000. 7,500 / 1,500 / 1,000 fits that rule.
-3. The shareholder field is an address. The brief's vault has to be a system account with no data, because a system transfer cannot pay an account owned by another program. That part is still unproven against Pump's actual transfer.
-4. Pump's public fee program is documented for mainnet. These docs do not describe a devnet deployment, so spike 1 cannot be treated as a devnet exercise until a devnet program id is confirmed.
-5. `getMinimumDistributableFee`, the token program used by new mints, and the burn route (Jupiter versus a direct curve buy, then an SPL burn from a PDA) were not executed.
-
-## Not run
-
-| Spike | Result |
-|---|---|
-| PDA shareholder receives SOL on the curve and after graduation | Not run |
-| Second `update_fee_shares_v2` fails after revoke | Not run. Docs say the first v2 update revokes admin |
-| create, config, update, and buy in one transaction or bundle | Not run |
-| Real `getMinimumDistributableFee` value | Not run |
-| Token program for burns | Not run |
-| Burn route and PDA token account | Not run |
-
-## Conflict with the brief
-
-The brief is right that the vault address is permanent once admin is revoked, so it cannot be a server wallet we plan to migrate later. It is not yet proven that Pump will pay a system PDA on both the curve and after graduation. Do not build `ship_vault` until those two transfers are seen on a throwaway mainnet coin.
-
-`POST /v1/launch/build` returns the decoded steps. `POST /v1/launch/submit` still creates a demo project. Neither sends a pump.fun transaction.
-
-## Pay pays SOL. Burn buys $POS
+# Money rails
 
 Checked 3 Oct 2026.
 
-A Pay vote credits 60 percent of the vault to the builder in SOL on the ledger and unlocks 20 percent of the remaining bag. The bag sits in a lock, not in the builder wallet. It does not buy $POS.
+There is no custom Solana program. The server holds three wallets and a mint bank. The database is the per coin ledger. The vault wallet is where vault SOL lives and where payouts are sent from.
 
-A burn vote (holders vote not to pay) moves 60 percent of the vault into a $POS bucket. The mint is `H49xNgg1hMV6LqXK6if2g8CYnrvp7CxQ5SJTnDRwPoS`. The crank asks Jupiter for a quote and retries when the quote fails. A quote does not spend the bucket and does not mark tokens as bought. Jupiter returned `TOKEN_NOT_TRADABLE` for that mint. `getAccountInfo` on mainnet and devnet returned no account. No swap is sent.
+## Wallets
 
-A missed deadline and an abandon still account a buy and burn of the project coin. A lapse queues leftover vault SOL and new vault fees to buy $POS.
+| Wallet | Share | Job |
+|---|---|---|
+| Vault | 75% | Receives the vault slice. Pays the builder in SOL on a pay vote. Buys $POS on a burn vote. Buys and burns the project coin on a miss, lapse, or abandon. |
+| Builder | 15% | Runway. The connected wallet. Fees land here as the coin trades. Pay votes also send vault SOL here. |
+| Platform | 10% | Platform treasury. |
+| Crank | Pending | Pays transaction fees when the vault needs a separate fee payer. |
 
-Launch still does not custody vault SOL. The builder stays the pump.fun creator. Fee sharing is meant to split 7,500 to a per coin vault PDA, 1,500 to the builder wallet, and 1,000 to a platform treasury. Those wallets are not created yet. There is no PLATFORM_WALLET, vault key, or crank signer on Railway. `POST /v1/launch/submit` is still a demo ledger only.
+Public addresses are on `GET /v1/treasury`. Secrets stay in Railway env vars: `VAULT_SECRET`, `PLATFORM_SECRET`, `CRANK_SECRET`.
+
+## Mint bank
+
+Every contract address ends in `PoS`. The server grinds keypairs in the background and keeps a ready pool (`MINT_BANK_TARGET`, default 24). Launch pulls one instantly. The bank then grinds a replacement.
+
+## Launch
+
+`POST /v1/launch/submit` claims a mint from the bank, records the project as live, and stores the vault, platform, and crank addresses on the project. The builder stays the creator.
+
+## Pay, burn, miss
+
+The ledger moves first. The crank then sends from the vault wallet.
+
+1. Pay: 60% of the vault is paid to the builder in SOL.
+2. Burn vote: 60% buys $POS.
+3. Miss, lapse, abandon: that slice buys the project coin and burns it.
+
+If a send or swap fails, the bucket stays queued and the next crank retries.

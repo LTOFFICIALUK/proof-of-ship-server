@@ -5,6 +5,7 @@ import bs58 from "bs58";
 import { createMemoryAuth, signInMessage, verifyWalletSignature } from "./auth.js";
 import { DEFAULT_SUPPLY, QUORUM_BPS, VOTE_WINDOW_MS } from "./engine/types.js";
 import { buildApp } from "./app.js";
+import { depositMint, readyCount, useMemoryMintBank } from "./mint-bank.js";
 import { setPosQuoter } from "./pos.js";
 import { createMemoryStore } from "./store/memory.js";
 
@@ -71,7 +72,7 @@ const launchBody = (title: string, deadlineMs: number) => ({
   promise: { title, doneLooksLike: "A public link works", proofType: "link", deadlineMs },
 });
 
-describe("http e2e", () => {
+describe("http e2e", { timeout: 300_000 }, () => {
   let app: App;
   let auth: ReturnType<typeof createMemoryAuth>;
 
@@ -105,6 +106,20 @@ describe("http e2e", () => {
     });
 
   before(async () => {
+    process.env.VAULT_WALLET = process.env.VAULT_WALLET || "Fmfq7v3tZ6PkCPJ3VG1HwWqRVDyaRp1nAJ3Lrhkb2XgB";
+    process.env.PLATFORM_WALLET = process.env.PLATFORM_WALLET || "3yuWPTTNjFKmm57QXTFXMRCy85VPszLKwHnvLztdsqNE";
+    process.env.CRANK_WALLET = process.env.CRANK_WALLET || "9miWKHFemn4Aran87UKesZMaviLv12P1kpFoKymvQUhv";
+    delete process.env.VAULT_SECRET;
+    delete process.env.PLATFORM_SECRET;
+    delete process.env.CRANK_SECRET;
+    useMemoryMintBank();
+    while ((await readyCount()) < 12) {
+      const next = pair();
+      await depositMint({
+        publicKey: `${next.publicKey.slice(0, -3)}${"PoS"}`,
+        secretKey: bs58.encode(next.secretKey),
+      });
+    }
     setPosQuoter(async () => {
       throw new Error("not tradable");
     });
@@ -133,7 +148,9 @@ describe("http e2e", () => {
     assert.equal(coin.verified, true);
     assert.equal(coin.profile.website, "https://example.com");
     assert.equal(coin.promises[0].doneLooksLike, "A public link works");
-    assert.equal(coin.chain.vault, "");
+    assert.match(mint, /PoS$/);
+    assert.equal(coin.demo, false);
+    assert.equal(coin.chain.vault, process.env.VAULT_WALLET);
 
     const fees = await app.inject({
       method: "POST",
@@ -212,7 +229,7 @@ describe("http e2e", () => {
     assert.match(coinBadge.body, /\$PUBL/);
 
     const shippedFeed = (
-      await app.inject({ method: "GET", url: "/v1/feed?scope=demo&filter=shipped" })
+      await app.inject({ method: "GET", url: "/v1/feed?filter=shipped" })
     ).json();
     assert.ok(shippedFeed.events.every((event: { kind: string }) => event.kind === "vote_pay"));
     const paidEvent = shippedFeed.events.find((event: { mint: string }) => event.mint === mint);
@@ -221,7 +238,7 @@ describe("http e2e", () => {
     assert.equal(paidEvent.sig, null);
 
     const shippedCoins = (
-      await app.inject({ method: "GET", url: "/v1/coins?scope=demo&filter=shipped" })
+      await app.inject({ method: "GET", url: "/v1/coins?filter=shipped" })
     ).json();
     assert.ok(shippedCoins.coins.some((card: { mint: string }) => card.mint === mint));
     assert.deepEqual(
@@ -229,9 +246,9 @@ describe("http e2e", () => {
       ["paid"],
     );
     const publicCoins = (await app.inject({ method: "GET", url: "/v1/coins" })).json();
-    assert.equal(publicCoins.total, 0);
+    assert.ok(publicCoins.coins.some((card: { mint: string }) => card.mint === mint));
 
-    const stats = (await app.inject({ method: "GET", url: "/v1/stats?scope=demo" })).json();
+    const stats = (await app.inject({ method: "GET", url: "/v1/stats" })).json();
     assert.ok(stats.shipped >= 1);
     assert.ok(stats.paidSol >= 0.45);
 
@@ -377,7 +394,7 @@ describe("http e2e", () => {
     });
     assert.equal(next.statusCode, 200, next.body);
     assert.equal(next.json().promises[1].proofType, "app");
-    const burned = (await app.inject({ method: "GET", url: "/v1/coins?scope=demo&filter=due" })).json();
+    const burned = (await app.inject({ method: "GET", url: "/v1/coins?filter=due" })).json();
     assert.ok(burned.coins.some((card: { mint: string }) => card.mint === mint));
   });
 
@@ -438,7 +455,7 @@ describe("http e2e", () => {
     assert.equal(bad.statusCode, 400);
   });
 
-  it("builds launch steps, submits a demo launch, and serves badges", async () => {
+  it("builds launch steps, submits a live launch, and serves badges", async () => {
     const builder = pair();
     await auth.linkX(builder.publicKey, "launchdev", "launchdev");
     const session = await signIn(app, builder.publicKey, builder.secretKey);
@@ -455,7 +472,8 @@ describe("http e2e", () => {
       payload: launchBody("Wizard", clock + 4 * DAY),
     });
     assert.equal(built.statusCode, 200, built.body);
-    assert.equal(built.json().mode, "demo");
+    assert.equal(built.json().mode, "live");
+    assert.equal(built.json().suffix, "PoS");
     assert.equal(built.json().steps.length, 5);
     const submitted = await app.inject({
       method: "POST",
@@ -465,6 +483,8 @@ describe("http e2e", () => {
     });
     assert.equal(submitted.statusCode, 200, submitted.body);
     const mint = submitted.json().mint as string;
+    assert.match(mint, /PoS$/);
+    assert.equal(submitted.json().mode, "live");
     const status = await app.inject({ method: "GET", url: `/v1/launch/${mint}/status` });
     assert.equal(status.json().listed, true);
     const card = await app.inject({ method: "GET", url: `/v1/coins/${mint}/card.svg` });

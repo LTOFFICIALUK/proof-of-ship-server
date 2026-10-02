@@ -5,6 +5,7 @@ import { migrate, pool } from "./db.js";
 import { logger } from "./logger.js";
 import { buildApp } from "./app.js";
 import { createPgStore } from "./store/pg.js";
+import { startMintBank } from "./mint-bank.js";
 import { startCrank } from "./workers/crank.js";
 
 const main = async () => {
@@ -20,6 +21,7 @@ const main = async () => {
   });
   const address = await app.listen({ host: "0.0.0.0", port: config.PORT });
   logger.info("server listening", { address });
+  startMintBank();
   startCrank(store);
 };
 

@@ -46,7 +46,7 @@ export const presentProject = (project: ProjectState, nowMs: number) => {
     builderWallet: project.builderWallet,
     xHandle: project.xHandle,
     verified: project.verified === true,
-    demo: project.demo !== false,
+    demo: project.demo === true,
     status: project.status,
     nowMs,
     profile: project.profile ?? {
@@ -56,7 +56,13 @@ export const presentProject = (project: ProjectState, nowMs: number) => {
       image: "",
       devBuyBps: 0,
     },
-    chain: project.chain ?? { vault: "", feeConfig: "", revokeSig: "" },
+    chain: {
+      vault: project.chain?.vault ?? "",
+      platform: project.chain?.platform ?? "",
+      crank: project.chain?.crank ?? "",
+      feeConfig: project.chain?.feeConfig ?? "",
+      revokeSig: project.chain?.revokeSig ?? "",
+    },
     rolloverStreak: project.rolloverStreak ?? 0,
     vault: {
       accountedSol: lamportsToSol(project.accounted),

@@ -165,7 +165,7 @@ export const loadHoldings = async (project: ProjectState, wallets: string[]) => 
 export const snapshotBalances = async (
   project: ProjectState,
 ): Promise<Record<string, string>> => {
-  if (project.demo !== false || !heliusUrl()) {
+  if (project.demo === true || !heliusUrl()) {
     return { ...project.balances };
   }
   try {

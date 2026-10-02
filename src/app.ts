@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
@@ -40,8 +39,10 @@ import {
   siteStats,
   type CoinFilter,
 } from "./presenters.js";
+import { claimMint, depositMint, readyCount } from "./mint-bank.js";
 import { advanceProject } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
+import { destinations, MINT_SUFFIX, treasury } from "./wallets.js";
 import { pctOf, voteWeight, weighVotes } from "./weights.js";
 
 const walletSchema = z
@@ -89,18 +90,14 @@ const badgeSvg = (left: string, right: string) => {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width)}" height="28" role="img" aria-label="${escapeXml(`${left}. ${right}`)}"><rect width="100%" height="28" rx="6" fill="#111112"/><rect x="10" y="9" width="5" height="10" fill="#f3f3f1"/><rect x="17" y="9" width="5" height="10" fill="#17803f"/><text x="30" y="18.5" fill="#f3f3f1" font-family="Geist, ui-sans-serif, system-ui" font-size="12" font-weight="600">${escapeXml(left)}</text><text x="${Math.round(36 + left.length * 7.4)}" y="18.5" fill="#a3a3a0" font-family="Geist, ui-sans-serif, system-ui" font-size="12">${escapeXml(right)}</text></svg>`;
 };
 
-const scoped = (projects: ProjectState[], scope: unknown) =>
-  projects.filter((project) => (scope === "demo" ? project.demo !== false : project.demo === false));
-
-const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-const fakeMint = () => {
-  const bytes = randomBytes(32);
-  let out = "";
-  for (let i = 0; i < 44; i += 1) {
-    out += BASE58[bytes[i % 32] % BASE58.length];
+const scoped = (projects: ProjectState[], scope: unknown) => {
+  if (scope === "demo") {
+    return projects.filter((project) => project.demo !== false);
   }
-  return out;
+  if (scope === "live") {
+    return projects.filter((project) => project.demo === false);
+  }
+  return projects;
 };
 
 const loadProject = async (store: ShipStore, mint: string) => {
@@ -433,19 +430,28 @@ export const buildApp = async (opts: AppOptions) => {
     promise: promiseSchema,
   });
 
-  const launchSteps = (body: z.infer<typeof launchSchema>) => [
-    { title: "Create the coin", detail: "pump.fun create. Creator is your wallet." },
-    { title: "Fee sharing", detail: "create_fee_sharing_config for this mint. You stay the creator." },
-    { title: "Lock the split", detail: "7,500 vault PDA, 1,500 your wallet, 1,000 platform wallet. Admin revoked." },
-    {
-      title: "Dev buy",
-      detail:
-        (body.devBuyBps ?? 0) === 0
-          ? "No extra buy at launch."
-          : `Buy ${(body.devBuyBps ?? 0) / 100}% of supply. Builders still cannot vote.`,
-    },
-    { title: "Register the vault", detail: "ship_vault.init_project stores the first promise hash." },
-  ];
+  const launchSteps = (body: z.infer<typeof launchSchema>) => {
+    const keys = treasury();
+    return [
+      {
+        title: "Take a mint from the bank",
+        detail: `The contract address ends in ${MINT_SUFFIX}. The bank hands one over and starts grinding a replacement.`,
+      },
+      { title: "You stay the creator", detail: "Your wallet is the pump.fun creator and the 15 percent runway address." },
+      {
+        title: "Lock the split",
+        detail: `75 percent to the vault ${keys.vault || "Pending"}, 15 percent to you, 10 percent to the platform ${keys.platform || "Pending"}.`,
+      },
+      {
+        title: "Dev buy",
+        detail:
+          (body.devBuyBps ?? 0) === 0
+            ? "No extra buy at launch."
+            : `Buy ${(body.devBuyBps ?? 0) / 100}% of supply. Builders still cannot vote.`,
+      },
+      { title: "Track the vault", detail: "Every fee, payout, and burn is written to the ledger and sent from the vault wallet." },
+    ];
+  };
 
   const createLaunch = async (wallet: string, body: z.infer<typeof launchSchema>, nowMs: number) => {
     const link = await auth.getX(wallet);
@@ -459,28 +465,36 @@ export const buildApp = async (opts: AppOptions) => {
       throw badRequest("That X account is already linked to a launch", "HANDLE_TAKEN");
     }
     const existing = await opts.store.listProjectsByBuilder(builder.id);
-    if (existing.some((project) => project.status === "active" && project.demo !== false)) {
+    if (existing.some((project) => project.status === "active")) {
       throw badRequest("You already have an active launch", "ACTIVE_LAUNCH");
     }
-    const created = createProject({
-      mint: fakeMint(),
-      name: body.name,
-      symbol: body.symbol,
-      builderWallet: wallet,
-      xHandle: link.xHandle,
-      nowMs,
-      devBuyBps: body.devBuyBps ?? 0,
-      promises: [
-        {
-          text: body.promise.title,
-          doneLooksLike: body.promise.doneLooksLike,
-          proofType: body.promise.proofType,
-          deadlineMs: body.promise.deadlineMs,
-        },
-      ],
-    });
+    const mint = await claimMint();
+    let created;
+    try {
+      created = createProject({
+        mint: mint.publicKey,
+        name: body.name,
+        symbol: body.symbol,
+        builderWallet: wallet,
+        xHandle: link.xHandle,
+        nowMs,
+        devBuyBps: body.devBuyBps ?? 0,
+        promises: [
+          {
+            text: body.promise.title,
+            doneLooksLike: body.promise.doneLooksLike,
+            proofType: body.promise.proofType,
+            deadlineMs: body.promise.deadlineMs,
+          },
+        ],
+      });
+    } catch (error) {
+      await depositMint(mint);
+      throw error;
+    }
     created.project.verified = true;
-    created.project.chain = null;
+    created.project.demo = false;
+    created.project.chain = destinations();
     created.project.profile = {
       description: body.description ?? "",
       website: body.website ?? "",
@@ -499,14 +513,18 @@ export const buildApp = async (opts: AppOptions) => {
       throw badRequest("Verify your X account before you launch");
     }
     const body = launchSchema.parse(request.body);
+    const keys = treasury();
     return {
-      mode: "demo",
+      mode: "live",
       listed: false,
+      suffix: MINT_SUFFIX,
+      readyMints: await readyCount(),
+      destinations: { vault: keys.vault, platform: keys.platform, crank: keys.crank, runway: wallet },
       steps: launchSteps(body),
       rules: [
         "The fee split cannot be changed by you or by us.",
         "You cannot withdraw the vault.",
-        "A pay vote pays 60 percent of the vault to you in SOL, and unlocks 20 percent of the remaining bag. The bag sits in a lock, not in your wallet. A burn vote spends 60 percent to buy $POS. The rest stays. No next promise in 7 days spends leftover vault SOL on $POS.",
+        "A pay vote pays 60 percent of the vault to you in SOL, and unlocks 20 percent of the remaining dev bag. A burn vote spends 60 percent to buy $POS. The rest stays.",
       ],
     };
   });
@@ -515,7 +533,7 @@ export const buildApp = async (opts: AppOptions) => {
     const wallet = await requireWallet(request);
     const body = launchSchema.parse(request.body);
     const project = await createLaunch(wallet, body, at(request));
-    return { mode: "demo", listed: true, mint: project.mint, project: presentProject(project, at(request)) };
+    return { mode: "live", listed: true, mint: project.mint, project: presentProject(project, at(request)) };
   });
 
   app.get("/v1/launch/:mint/status", async (request) => {
@@ -524,9 +542,21 @@ export const buildApp = async (opts: AppOptions) => {
     return {
       mint: project.mint,
       listed: true,
-      mode: project.demo === false ? "chain" : "demo",
-      chain: project.chain ?? { vault: "", feeConfig: "", revokeSig: "" },
+      mode: "live",
+      chain: project.chain ?? destinations(),
       project: presentProject(project, at(request)),
+    };
+  });
+
+  app.get("/v1/treasury", async () => {
+    const keys = treasury();
+    return {
+      suffix: MINT_SUFFIX,
+      readyMints: await readyCount(),
+      vault: keys.vault,
+      platform: keys.platform,
+      crank: keys.crank,
+      split: { vaultBps: 7500, runwayBps: 1500, platformBps: 1000 },
     };
   });
 

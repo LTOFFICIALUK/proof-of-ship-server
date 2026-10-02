@@ -1,24 +1,78 @@
-import { crank, executeBuybackBurn, finalizeVote, lapse } from "./engine/vault.js";
+import { buyPos, buybackBurn, sendSolFromVault } from "./chain.js";
+import { crank, executeBuybackBurn, executePosBuy, finalizeVote, lapse } from "./engine/vault.js";
 import type { ProjectState } from "./engine/types.js";
 import type { EngineEvent } from "./engine/vault.js";
 import { logger } from "./logger.js";
-import { quotePosOut } from "./pos.js";
+import { destinations, treasury } from "./wallets.js";
 import type { ShipStore } from "./store/memory.js";
 import { weighVotes } from "./weights.js";
 
-export const fillPos = async (project: ProjectState, at: number): Promise<EngineEvent[]> => {
-  if (BigInt(project.posBucket ?? "0") === 0n) {
-    return [];
-  }
-  try {
-    const out = await quotePosOut(BigInt(project.posBucket));
-    logger.info("pos quote", { mint: project.mint, at, out: out.toString() });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn("pos buy waiting", { mint: project.mint, message });
-  }
-  return [];
+const n = (value: string | undefined) => BigInt(value ?? "0");
+
+const ensureChain = (project: ProjectState) => {
+  project.chain = { ...destinations(), ...project.chain };
 };
+
+export const flushChain = async (project: ProjectState, at: number): Promise<EngineEvent[]> => {
+  const events: EngineEvent[] = [];
+  if (!treasury().vaultSigner) {
+    return events;
+  }
+  ensureChain(project);
+  const chain = project.chain!;
+
+  const owedPay = n(project.released) - n(chain.paid);
+  if (owedPay > 0n) {
+    try {
+      const sig = await sendSolFromVault(project.builderWallet, owedPay);
+      chain.paid = (n(chain.paid) + owedPay).toString();
+      events.push({
+        kind: "release",
+        atMs: at,
+        mint: project.mint,
+        detail: { amount: owedPay.toString(), sig: sig || "", to: project.builderWallet },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("pay send waiting", { mint: project.mint, message });
+    }
+  }
+
+  const posQueued = n(project.posBucket);
+  if (posQueued > 0n) {
+    try {
+      const bought = await buyPos(posQueued);
+      events.push(...executePosBuy(project, at, bought.out));
+      chain.posSpent = (n(chain.posSpent) + posQueued).toString();
+      if (bought.sig) {
+        events[events.length - 1]!.detail.sig = bought.sig;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("pos buy waiting", { mint: project.mint, message });
+    }
+  }
+
+  const owedBurn = n(project.burned) + n(project.burnBucket) - n(chain.posSpent) - n(chain.burnSpent);
+  if (owedBurn > 0n) {
+    try {
+      const bought = await buybackBurn(project.mint, owedBurn);
+      events.push(...executeBuybackBurn(project, at));
+      chain.burnSpent = (n(chain.burnSpent) + owedBurn).toString();
+      if (bought.sig) {
+        events[events.length - 1]!.detail.sig = bought.sig;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("burn send waiting", { mint: project.mint, message });
+    }
+  }
+
+  return events;
+};
+
+export const fillPos = async (project: ProjectState, at: number): Promise<EngineEvent[]> =>
+  flushChain(project, at);
 
 export const advanceProject = async (
   store: ShipStore,
@@ -28,13 +82,13 @@ export const advanceProject = async (
   const vote = project.vote;
   if (!vote || at < vote.endMs) {
     const events = crank(project, at);
-    events.push(...(await fillPos(project, at)));
+    events.push(...(await flushChain(project, at)));
     return events;
   }
   const promise = project.promises.find((item) => item.idx === vote.promiseIdx);
   if (!promise) {
     const events = crank(project, at);
-    events.push(...(await fillPos(project, at)));
+    events.push(...(await flushChain(project, at)));
     return events;
   }
   const votes = (await store.listHolderVotes(project.mint)).filter(
@@ -42,7 +96,7 @@ export const advanceProject = async (
   );
   const weighed = await weighVotes(project, promise, votes);
   if (!weighed.ok) {
-    return fillPos(project, at);
+    return flushChain(project, at);
   }
   vote.payWeight = weighed.pay.toString();
   vote.burnWeight = weighed.burn.toString();
@@ -61,6 +115,6 @@ export const advanceProject = async (
   }
   events.push(...lapse(project, at));
   events.push(...executeBuybackBurn(project, at));
-  events.push(...(await fillPos(project, at)));
+  events.push(...(await flushChain(project, at)));
   return events;
 };
