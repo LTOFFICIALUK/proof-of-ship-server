@@ -216,8 +216,8 @@ export const presentBuilder = (
 };
 
 const FEED_GROUPS: Record<string, string[]> = {
-  shipped: ["vote_pay", "pos"],
-  burned: ["vote_burn", "miss", "burn", "lapse", "abandon"],
+  shipped: ["vote_pay"],
+  burned: ["vote_burn", "pos", "miss", "burn", "lapse", "abandon"],
   coins: ["launch"],
   promises: ["promise", "vote_open"],
 };
