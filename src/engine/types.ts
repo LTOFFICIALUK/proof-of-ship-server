@@ -55,6 +55,7 @@ export type PromiseState = {
   postedAtMs: number;
   status: PromiseStatus;
   quorumFails: number;
+  resultNet?: number;
 };
 
 export type ProjectState = {
@@ -79,6 +80,7 @@ export type ProjectState = {
   promises: PromiseState[];
   vote: VoteState | null;
   balances: Record<string, string>;
+  demo?: boolean;
 };
 
 export class EngineError extends Error {

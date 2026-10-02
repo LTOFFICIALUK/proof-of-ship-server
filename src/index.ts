@@ -1,3 +1,4 @@
+import { createPgAuth } from "./auth-pg.js";
 import { loadConfig } from "./config.js";
 import { nowMs } from "./clock.js";
 import { migrate, pool } from "./db.js";
@@ -15,6 +16,7 @@ const main = async () => {
     allowSim: config.ALLOW_SIM,
     frontendOrigin: config.FRONTEND_ORIGIN,
     now: nowMs,
+    auth: createPgAuth(),
   });
   const address = await app.listen({ host: "0.0.0.0", port: config.PORT });
   logger.info("server listening", { address });

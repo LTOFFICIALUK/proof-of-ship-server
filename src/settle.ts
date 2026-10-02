@@ -20,6 +20,10 @@ export const advanceProject = async (
       );
       if (holdings.ok) {
         const tally = tallyVotes(votes, holdings.balances, holdings.supply);
+        const promise = project.promises.find((item) => item.idx === project.vote?.promiseIdx);
+        if (promise) {
+          promise.resultNet = tally.netPct;
+        }
         const events = finalizeFromNet(project, at, tally.netPct > 0);
         events.push(...lapse(project, at));
         events.push(...executeBuybackBurn(project, at));

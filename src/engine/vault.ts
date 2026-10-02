@@ -162,6 +162,7 @@ export const createProject = (input: {
     promises,
     vote: null,
     balances: {},
+    demo: true,
   };
 
   if (devLock > 0n) {
@@ -456,6 +457,12 @@ export const finalizeVote = (
 
   const pay = n(vote.payWeight);
   const burn = n(vote.burnWeight);
+  const supply = n(project.circulatingSupply);
+  if (supply > 0n) {
+    const payPct = Number((pay * 10000n) / supply) / 100;
+    const burnPct = Number((burn * 10000n) / supply) / 100;
+    promise.resultNet = payPct - burnPct;
+  }
   const isPay = pay > burn;
   if (isPay) {
     promise.status = "paid";

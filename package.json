@@ -14,9 +14,12 @@
     "e2e": "tsx scripts/e2e.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^10.0.2",
+    "bs58": "^6.0.0",
     "fastify": "^5.2.1",
     "pg": "^8.16.3",
+    "tweetnacl": "^1.0.3",
     "zod": "^3.24.2"
   },
   "devDependencies": {

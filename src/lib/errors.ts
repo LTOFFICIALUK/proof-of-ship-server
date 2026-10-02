@@ -14,3 +14,6 @@ export const badRequest = (message: string, code = "BAD_REQUEST") =>
 
 export const notFound = (message: string, code = "NOT_FOUND") =>
   new HttpError(404, code, message);
+
+export const unauthorized = (message = "Sign in with your wallet") =>
+  new HttpError(401, "UNAUTHORIZED", message);

@@ -1,19 +1,27 @@
 import { randomBytes } from "node:crypto";
-import Fastify, { type FastifyRequest } from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import { z } from "zod";
+import {
+  codeChallenge,
+  createMemoryAuth,
+  newNonce,
+  newSessionId,
+  verifySignIn,
+  type AuthStore,
+} from "./auth.js";
 import { EngineError } from "./engine/types.js";
 import {
   abandon,
   airdrop,
   appendPromise,
-  castVote,
   crank,
   createProject,
   creditFees,
 } from "./engine/vault.js";
 import { getNowMs, setNowMs } from "./clock.js";
-import { HttpError, badRequest, notFound } from "./lib/errors.js";
+import { HttpError, badRequest, notFound, unauthorized } from "./lib/errors.js";
 import { balanceOf, loadHoldings, tallyVotes } from "./holdings.js";
 import { loadMarket } from "./market.js";
 import { coinSlug, presentBuilder, presentFeed, presentProject } from "./presenters.js";
@@ -75,7 +83,11 @@ const presentLive = async (
         ...item,
         upPct: tally.upPct,
         downPct: tally.downPct,
-        netPct: holdings.ok ? tally.netPct : null,
+        netPct: rows.length
+          ? holdings.ok
+            ? tally.netPct
+            : null
+          : item.resultNet ?? (holdings.ok ? tally.netPct : null),
         yourSide: rows.find((row) => row.wallet === viewer)?.side ?? null,
       };
     }),
@@ -99,6 +111,7 @@ export type AppOptions = {
   allowSim: boolean;
   frontendOrigin: string;
   now?: () => number;
+  auth?: AuthStore;
 };
 
 export const buildApp = async (opts: AppOptions) => {
@@ -114,14 +127,48 @@ export const buildApp = async (opts: AppOptions) => {
     }
     return now();
   };
+  const auth = opts.auth ?? createMemoryAuth();
+  const lastChat = new Map<string, number>();
+  const reports = new Set<string>();
   const app = Fastify({ logger: false, bodyLimit: 1_000_000 });
 
+  await app.register(cookie);
   await app.register(cors, {
     origin:
       opts.frontendOrigin === "*"
         ? true
         : opts.frontendOrigin.split(",").map((item) => item.trim()),
+    credentials: true,
   });
+
+  const sessionWallet = async (request: FastifyRequest) => {
+    const id = request.cookies.pos_session;
+    if (!id) {
+      return null;
+    }
+    return auth.getSession(id, Date.now());
+  };
+
+  const requireWallet = async (request: FastifyRequest) => {
+    const wallet = await sessionWallet(request);
+    if (!wallet) {
+      throw unauthorized();
+    }
+    return wallet;
+  };
+
+  const setSession = async (reply: FastifyReply, wallet: string) => {
+    const id = newSessionId();
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+    await auth.putSession(id, wallet, expiresAt);
+    reply.setCookie("pos_session", id, {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 24 * 60 * 60,
+      secure: process.env.NODE_ENV === "production",
+    });
+  };
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof HttpError) {
@@ -151,15 +198,125 @@ export const buildApp = async (opts: AppOptions) => {
     time: new Date().toISOString(),
   }));
 
-  app.post("/v1/builders", async (request) => {
+  app.get("/v1/auth/nonce", async () => {
+    const nonce = newNonce();
+    await auth.putNonce(nonce, Date.now() + 10 * 60 * 1000);
+    return { nonce };
+  });
+
+  app.post("/v1/auth/verify", async (request, reply) => {
     const body = z
       .object({
-        wallet: walletSchema,
-        xHandle: z.string().min(1).max(32),
+        message: z.string().min(1).max(500),
+        signature: z.string().min(1),
       })
       .parse(request.body);
+    const parsed = verifySignIn(body.message, body.signature);
+    if (!parsed || !(await auth.takeNonce(parsed.nonce, Date.now()))) {
+      throw unauthorized("That sign in could not be verified");
+    }
+    await setSession(reply, parsed.wallet);
+    const link = await auth.getX(parsed.wallet);
+    return { wallet: parsed.wallet, xHandle: link?.xHandle ?? null, xUserId: link?.xUserId ?? null };
+  });
+
+  app.post("/v1/auth/logout", async (request, reply) => {
+    const id = request.cookies.pos_session;
+    if (id) {
+      await auth.deleteSession(id);
+    }
+    reply.clearCookie("pos_session", { path: "/" });
+    return { ok: true };
+  });
+
+  app.get("/v1/me", async (request) => {
+    const wallet = await sessionWallet(request);
+    if (!wallet) {
+      return { wallet: null, xHandle: null, xUserId: null };
+    }
+    const link = await auth.getX(wallet);
+    return { wallet, xHandle: link?.xHandle ?? null, xUserId: link?.xUserId ?? null };
+  });
+
+  app.get("/v1/x/connect", async (request) => {
+    const wallet = await requireWallet(request);
+    const clientId = process.env.X_CLIENT_ID;
+    const redirectUri = process.env.X_REDIRECT_URI;
+    if (!clientId || !redirectUri) {
+      throw new HttpError(503, "X_UNAVAILABLE", "X sign in is not configured yet");
+    }
+    const state = newNonce();
+    const verifier = newNonce() + newNonce();
+    await auth.putOauth(state, { wallet, verifier, expiresAt: Date.now() + 10 * 60 * 1000 });
+    const url = new URL("https://twitter.com/i/oauth2/authorize");
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("scope", "users.read tweet.read");
+    url.searchParams.set("state", state);
+    url.searchParams.set("code_challenge", codeChallenge(verifier));
+    url.searchParams.set("code_challenge_method", "S256");
+    return { url: url.toString() };
+  });
+
+  app.get("/v1/x/callback", async (request, reply) => {
+    const query = z
+      .object({
+        code: z.string().min(1),
+        state: z.string().min(1),
+      })
+      .parse(request.query);
+    const pending = await auth.takeOauth(query.state, Date.now());
+    const clientId = process.env.X_CLIENT_ID;
+    const clientSecret = process.env.X_CLIENT_SECRET;
+    const redirectUri = process.env.X_REDIRECT_URI;
+    const origin = opts.frontendOrigin === "*" ? "/" : opts.frontendOrigin.split(",")[0]?.trim();
+    if (!pending || !clientId || !clientSecret || !redirectUri) {
+      return reply.redirect(`${origin || "/"}/launch?x=failed`);
+    }
+    const tokenBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      code: query.code,
+      redirect_uri: redirectUri,
+      code_verifier: pending.verifier,
+      client_id: clientId,
+    });
+    const token = await fetch("https://api.twitter.com/2/oauth2/token", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+      },
+      body: tokenBody,
+    });
+    if (!token.ok) {
+      return reply.redirect(`${origin}/launch?x=failed`);
+    }
+    const tokenJson = (await token.json()) as { access_token?: string };
+    const profile = await fetch("https://api.twitter.com/2/users/me", {
+      headers: { authorization: `Bearer ${tokenJson.access_token ?? ""}` },
+    });
+    if (!profile.ok) {
+      return reply.redirect(`${origin}/launch?x=failed`);
+    }
+    const profileJson = (await profile.json()) as { data?: { id?: string; username?: string } };
+    const xUserId = profileJson.data?.id;
+    const xHandle = profileJson.data?.username;
+    if (!xUserId || !xHandle) {
+      return reply.redirect(`${origin}/launch?x=failed`);
+    }
+    await auth.linkX(pending.wallet, xUserId, xHandle);
+    return reply.redirect(`${origin}/launch?x=linked`);
+  });
+
+  app.post("/v1/builders", async (request) => {
+    const wallet = await requireWallet(request);
+    const link = await auth.getX(wallet);
+    if (!link) {
+      throw badRequest("Link your X account before you launch");
+    }
     try {
-      const builder = await opts.store.upsertBuilder(body.wallet, body.xHandle);
+      const builder = await opts.store.upsertBuilder(wallet, link.xHandle);
       return builder;
     } catch {
       throw badRequest("That X handle is already in use", "HANDLE_TAKEN");
@@ -167,19 +324,22 @@ export const buildApp = async (opts: AppOptions) => {
   });
 
   app.post("/v1/projects", async (request) => {
+    const wallet = await requireWallet(request);
+    const link = await auth.getX(wallet);
+    if (!link) {
+      throw badRequest("Link your X account before you launch");
+    }
     const body = z
       .object({
-        wallet: walletSchema,
-        xHandle: z.string().min(1).max(32),
         name: z.string().min(1).max(32),
         symbol: z.string().min(1).max(10),
         promises: z.array(promiseSchema).min(1).max(20),
       })
       .parse(request.body);
 
-    const builder = await opts.store.upsertBuilder(body.wallet, body.xHandle);
+    const builder = await opts.store.upsertBuilder(wallet, link.xHandle);
     const existing = await opts.store.listProjectsByBuilder(builder.id);
-    if (existing.some((project) => project.status === "active")) {
+    if (existing.some((project) => project.status === "active" && project.demo !== false)) {
       throw badRequest("You already have an active launch", "ACTIVE_LAUNCH");
     }
 
@@ -187,8 +347,8 @@ export const buildApp = async (opts: AppOptions) => {
       mint: fakeMint(),
       name: body.name,
       symbol: body.symbol,
-      builderWallet: body.wallet,
-      xHandle: body.xHandle,
+      builderWallet: wallet,
+      xHandle: link.xHandle,
       nowMs: at(request),
       promises: body.promises,
     });
@@ -196,8 +356,11 @@ export const buildApp = async (opts: AppOptions) => {
     return presentProject(created.project, at(request));
   });
 
-  app.get("/v1/projects", async () => {
-    const projects = await opts.store.listProjects();
+  app.get("/v1/projects", async (request) => {
+    const scope = (request.query as { scope?: string }).scope;
+    const projects = (await opts.store.listProjects()).filter((project) =>
+      scope === "demo" ? project.demo !== false : project.demo === false,
+    );
     return {
       projects: projects
         .slice()
@@ -225,16 +388,17 @@ export const buildApp = async (opts: AppOptions) => {
     if (!project) {
       throw notFound("No coin with that page");
     }
-    const viewer = (request.query as { wallet?: string }).wallet;
-    return presentLive(opts.store, project, at(request), viewer);
+    const viewer = await sessionWallet(request);
+    return presentLive(opts.store, project, at(request), viewer ?? undefined);
   });
 
   app.post("/v1/projects/:mint/promises/:idx/vote", async (request) => {
+    const wallet = await requireWallet(request);
     const { mint, idx } = request.params as { mint: string; idx: string };
     const body = z
       .object({
-        wallet: walletSchema,
         side: z.enum(["up", "down"]),
+        reason: z.string().max(140).optional(),
       })
       .parse(request.body);
     const promiseIdx = Number(idx);
@@ -243,21 +407,21 @@ export const buildApp = async (opts: AppOptions) => {
     if (!promise || !["pending", "vote_open", "no_quorum"].includes(promise.status)) {
       throw badRequest("That promise is not open for votes");
     }
-    const held = await balanceOf(project, body.wallet);
+    const held = await balanceOf(project, wallet);
     if (!held.ok) {
       throw badRequest("Could not read your balance");
     }
     if (held.amount <= 0n) {
       throw badRequest("You need to hold this coin to vote");
     }
-    await opts.store.upsertHolderVote(mint, promiseIdx, body.wallet, body.side);
-    return presentLive(opts.store, project, at(request), body.wallet);
+    await opts.store.upsertHolderVote(mint, promiseIdx, wallet, body.side);
+    return presentLive(opts.store, project, at(request), wallet);
   });
 
   app.get("/v1/projects/:mint/messages", async (request) => {
     const { mint } = request.params as { mint: string };
     const project = await loadProject(opts.store, mint);
-    const viewer = (request.query as { wallet?: string }).wallet;
+    const viewer = await sessionWallet(request);
     const messages = await opts.store.listMessages(mint, 80);
     if (!viewer) {
       return { messages, holds: false };
@@ -267,30 +431,43 @@ export const buildApp = async (opts: AppOptions) => {
   });
 
   app.post("/v1/projects/:mint/messages", async (request) => {
+    const wallet = await requireWallet(request);
     const { mint } = request.params as { mint: string };
     const body = z
       .object({
-        wallet: walletSchema,
         text: z.string().trim().min(1).max(280),
       })
       .parse(request.body);
     const project = await loadProject(opts.store, mint);
-    const held = await balanceOf(project, body.wallet);
+    const previous = lastChat.get(wallet) ?? 0;
+    if (at(request) - previous < 10_000) {
+      throw new HttpError(429, "RATE_LIMIT", "Wait a moment before sending again");
+    }
+    const held = await balanceOf(project, wallet);
     if (!held.ok) {
       throw badRequest("Could not read your balance");
     }
     if (held.amount <= 0n) {
       throw badRequest("Hold some supply to send");
     }
-    const message = await opts.store.addMessage(mint, body.wallet, body.text, at(request));
+    lastChat.set(wallet, at(request));
+    const message = await opts.store.addMessage(mint, wallet, body.text, at(request));
     return { message };
+  });
+
+  app.post("/v1/projects/:mint/messages/:id/report", async (request) => {
+    await requireWallet(request);
+    const { mint, id } = request.params as { mint: string; id: string };
+    await loadProject(opts.store, mint);
+    reports.add(`${mint}:${id}`);
+    return { ok: true };
   });
 
   app.get("/v1/projects/:mint", async (request) => {
     const { mint } = request.params as { mint: string };
     const project = await loadProject(opts.store, mint);
-    const viewer = (request.query as { wallet?: string }).wallet;
-    return presentLive(opts.store, project, at(request), viewer);
+    const viewer = await sessionWallet(request);
+    return presentLive(opts.store, project, at(request), viewer ?? undefined);
   });
 
   app.get("/v1/builders/:handle", async (request) => {
@@ -303,9 +480,18 @@ export const buildApp = async (opts: AppOptions) => {
     return presentBuilder(builder.xHandle, builder.wallet, projects);
   });
 
-  app.get("/v1/feed", async () => {
-    const rows = await opts.store.listFeed(50);
-    return { events: presentFeed(rows) };
+  app.get("/v1/feed", async (request) => {
+    const scope = (request.query as { scope?: string }).scope;
+    const projects = await opts.store.listProjects();
+    const allowed = new Set(
+      projects
+        .filter((project) => (scope === "demo" ? project.demo !== false : project.demo === false))
+        .map((project) => project.mint),
+    );
+    const rows = (await opts.store.listFeed(80)).filter(
+      (row) => allowed.has(row.mint) && row.atMs <= at(request),
+    );
+    return { events: presentFeed(rows).slice(0, 50) };
   });
 
   app.get("/v1/badge/:mint.svg", async (request, reply) => {
@@ -324,19 +510,19 @@ export const buildApp = async (opts: AppOptions) => {
   });
 
   app.post("/v1/projects/:mint/promises", async (request) => {
+    const wallet = await requireWallet(request);
     const { mint } = request.params as { mint: string };
     const body = z
       .object({
-        wallet: walletSchema,
         text: z.string().min(1).max(280),
         deadlineMs: z.number().int().positive(),
       })
       .parse(request.body);
     const project = await loadProject(opts.store, mint);
-    if (project.builderWallet !== body.wallet) {
+    if (project.builderWallet !== wallet) {
       throw badRequest("Only the builder can add a promise", "FORBIDDEN");
     }
-    const builder = await opts.store.getBuilderByWallet(body.wallet);
+    const builder = await opts.store.getBuilderByWallet(wallet);
     if (!builder) {
       throw notFound("Builder missing");
     }
@@ -345,34 +531,14 @@ export const buildApp = async (opts: AppOptions) => {
     return presentProject(project, at(request));
   });
 
-  app.post("/v1/projects/:mint/vote", async (request) => {
-    const { mint } = request.params as { mint: string };
-    const body = z
-      .object({
-        wallet: walletSchema,
-        side: z.enum(["pay", "burn"]),
-        amount: z.string().regex(/^[0-9]+$/),
-      })
-      .parse(request.body);
-    const project = await loadProject(opts.store, mint);
-    const builder = await opts.store.getBuilderByWallet(project.builderWallet);
-    if (!builder) {
-      throw notFound("Builder missing");
-    }
-    crank(project, at(request));
-    castVote(project, body.wallet, body.side, BigInt(body.amount));
-    await persist(opts.store, builder.id, project, []);
-    return presentProject(project, at(request));
-  });
-
   app.post("/v1/projects/:mint/abandon", async (request) => {
+    const wallet = await requireWallet(request);
     const { mint } = request.params as { mint: string };
-    const body = z.object({ wallet: walletSchema }).parse(request.body);
     const project = await loadProject(opts.store, mint);
-    if (project.builderWallet !== body.wallet) {
+    if (project.builderWallet !== wallet) {
       throw badRequest("Only the builder can abandon", "FORBIDDEN");
     }
-    const builder = await opts.store.getBuilderByWallet(body.wallet);
+    const builder = await opts.store.getBuilderByWallet(wallet);
     if (!builder) {
       throw notFound("Builder missing");
     }
