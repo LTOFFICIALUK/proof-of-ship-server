@@ -409,6 +409,29 @@ describe("http e2e", () => {
     assert.equal(bigDevBuy.statusCode, 400);
   });
 
+  it("accepts a dropped image data URL", async () => {
+    const builder = pair();
+    await auth.linkX(builder.publicKey, "imgdev", "imgdev");
+    const session = await signIn(app, builder.publicKey, builder.secretKey);
+    const pixel =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const ok = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie: session },
+      payload: { ...launchBody("Image", clock + 4 * DAY), image: pixel },
+    });
+    assert.equal(ok.statusCode, 200, ok.body);
+    assert.equal(ok.json().profile.image, pixel);
+    const bad = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie: session },
+      payload: { ...launchBody("Badimg", clock + 4 * DAY), image: "data:text/html;base64,PHNjcmlwdD4=" },
+    });
+    assert.equal(bad.statusCode, 400);
+  });
+
   it("builds launch steps, submits a demo launch, and serves badges", async () => {
     const builder = pair();
     await auth.linkX(builder.publicKey, "launchdev", "launchdev");

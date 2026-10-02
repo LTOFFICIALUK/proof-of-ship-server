@@ -58,6 +58,21 @@ const linkSchema = z
   .refine((value) => value === "" || /^https:\/\/[^\s]+$/.test(value), "Links must start with https://")
   .optional();
 
+const imageSchema = z
+  .string()
+  .trim()
+  .max(700_000, "Use a smaller image")
+  .refine((value) => {
+    if (!value) {
+      return true;
+    }
+    if (/^https:\/\/[^\s]+$/.test(value)) {
+      return true;
+    }
+    return /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value);
+  }, "Drop an image or paste an https image link")
+  .optional();
+
 const promiseSchema = z.object({
   title: z.string().trim().min(1, "Add a promise title").max(80, "Keep the title under 80 characters"),
   doneLooksLike: z.string().trim().max(500, "Keep it under 500 characters").optional(),
@@ -211,7 +226,7 @@ export const buildApp = async (opts: AppOptions) => {
   const auth = opts.auth ?? createMemoryAuth();
   const lastChat = new Map<string, number>();
   const reports = new Set<string>();
-  const app = Fastify({ logger: false, bodyLimit: 1_000_000 });
+  const app = Fastify({ logger: false, bodyLimit: 2_000_000 });
 
   await app.register(cookie);
   await app.register(cors, {
@@ -412,7 +427,7 @@ export const buildApp = async (opts: AppOptions) => {
     name: z.string().trim().min(1, "Add a coin name").max(32),
     symbol: z.string().trim().min(1, "Add a ticker").max(10),
     description: z.string().trim().max(500).optional(),
-    image: linkSchema,
+    image: imageSchema,
     website: linkSchema,
     github: linkSchema,
     devBuyBps: z.number().int().min(0).max(300).optional(),
