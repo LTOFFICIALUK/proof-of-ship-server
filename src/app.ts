@@ -429,7 +429,7 @@ export const buildApp = async (opts: AppOptions) => {
     image: imageSchema,
     website: linkSchema,
     github: linkSchema,
-    devBuyBps: z.number().int().min(0).max(300).optional(),
+    devBuyBps: z.number().int().min(0).max(500).optional(),
     promise: promiseSchema,
   });
 

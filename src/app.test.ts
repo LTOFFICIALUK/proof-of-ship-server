@@ -410,7 +410,7 @@ describe("http e2e", () => {
       method: "POST",
       url: "/v1/projects",
       headers: { cookie: session },
-      payload: { ...launchBody("Dev", clock + 4 * DAY), devBuyBps: 400 },
+      payload: { ...launchBody("Dev", clock + 4 * DAY), devBuyBps: 600 },
     });
     assert.equal(bigDevBuy.statusCode, 400);
   });

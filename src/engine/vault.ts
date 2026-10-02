@@ -109,7 +109,7 @@ export const createProject = (input: {
   const supply = input.circulatingSupply ?? DEFAULT_SUPPLY;
   const devBps = input.devBuyBps ?? 0;
   if (devBps < 0 || devBps > MAX_DEV_BUY_BPS) {
-    throw new EngineError("DEV_BUY", "Dev buy can be at most 3 percent");
+    throw new EngineError("DEV_BUY", "Dev buy can be at most 5 percent");
   }
 
   const promises: PromiseState[] = [];
