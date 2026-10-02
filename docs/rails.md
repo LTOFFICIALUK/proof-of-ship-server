@@ -28,3 +28,13 @@ Sources: [CREATOR_FEE_SHARING.md](https://github.com/pump-fun/pump-public-docs/b
 The brief is right that the vault address is permanent once admin is revoked, so it cannot be a server wallet we plan to migrate later. It is not yet proven that Pump will pay a system PDA on both the curve and after graduation. Do not build `ship_vault` until those two transfers are seen on a throwaway mainnet coin.
 
 `POST /v1/launch/build` returns the decoded steps. `POST /v1/launch/submit` still creates a demo project. Neither sends a pump.fun transaction.
+
+## Pay buys $POS
+
+Checked 2 Oct 2026.
+
+A Pay vote moves 60 percent of the vault ledger into a $POS bucket and unlocks 20 percent of the remaining dev bag. The mint is `H49xNgg1hMV6LqXK6if2g8CYnrvp7CxQ5SJTnDRwPoS`.
+
+The crank asks Jupiter for a quote and retries when the quote fails. A quote does not spend the bucket and does not mark tokens as bought. Jupiter returned `TOKEN_NOT_TRADABLE` for that mint. `getAccountInfo` on mainnet and devnet returned no account. No swap is sent, and launch still does not custody vault SOL.
+
+Burn, a missed deadline, lapse, and abandon still account a buy and burn of the project coin. They do not buy $POS. SOL already in the $POS bucket stays there.

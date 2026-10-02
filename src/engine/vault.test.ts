@@ -119,7 +119,7 @@ describe("pay vote", () => {
     assert.equal(invariantHolds(project), true);
   });
 
-  it("fills the queued SOL when a POS quote lands", async () => {
+  it("keeps the POS bucket queued when a quote is not a swap", async () => {
     setPosQuoter(async (lamports) => lamports * 2n);
     const project = launch();
     creditFees(project, 10_000n, t0);
@@ -129,10 +129,10 @@ describe("pay vote", () => {
     castVote(project, voter, "pay", quorumAmount());
     finalizeVote(project, t0 + DAY + VOTE_WINDOW_MS);
     const events = await fillPos(project, t0 + DAY + VOTE_WINDOW_MS);
-    assert.equal(events[0]?.kind, "pos");
-    assert.equal(project.posBucket, "0");
-    assert.equal(project.posBought, "9000");
-    assert.equal(project.released, "4500");
+    assert.equal(events.length, 0);
+    assert.equal(project.posBucket, "4500");
+    assert.equal(project.posBought, "0");
+    assert.equal(project.released, "0");
     setPosQuoter(async () => {
       throw new Error("not tradable");
     });

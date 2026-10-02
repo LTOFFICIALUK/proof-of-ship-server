@@ -1,4 +1,4 @@
-import { crank, executeBuybackBurn, executePosBuy, finalizeVote, lapse } from "./engine/vault.js";
+import { crank, executeBuybackBurn, finalizeVote, lapse } from "./engine/vault.js";
 import type { ProjectState } from "./engine/types.js";
 import type { EngineEvent } from "./engine/vault.js";
 import { logger } from "./logger.js";
@@ -12,12 +12,12 @@ export const fillPos = async (project: ProjectState, at: number): Promise<Engine
   }
   try {
     const out = await quotePosOut(BigInt(project.posBucket));
-    return executePosBuy(project, at, out);
+    logger.info("pos quote", { mint: project.mint, at, out: out.toString() });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("pos buy waiting", { mint: project.mint, message });
-    return [];
   }
+  return [];
 };
 
 export const advanceProject = async (
