@@ -257,7 +257,7 @@ export const siteStats = (projects: ProjectState[]) => {
   return {
     launched: projects.length,
     lockedSol: sum((project) => project.balance),
-    paidSol: sum((project) => project.released) + sum((project) => project.posBucket ?? "0"),
+    paidSol: sum((project) => project.released),
     burnedSol: sum((project) => project.burned) + sum((project) => project.burnBucket),
     shipped: promises.filter((item) => item.status === "paid").length,
     missed: promises.filter((item) => item.status === "missed" || item.status === "burned").length,

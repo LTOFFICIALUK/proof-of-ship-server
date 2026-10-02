@@ -183,8 +183,8 @@ describe("http e2e", () => {
 
     const page = (await app.inject({ method: "GET", url: `/v1/projects/${mint}` })).json();
     assert.equal(page.promises[0].status, "paid");
-    assert.equal(page.vault.posBucket, "450000000");
-    assert.equal(page.vault.released, "0");
+    assert.equal(page.vault.posBucket, "0");
+    assert.equal(page.vault.released, "450000000");
     assert.equal(page.vault.posMint, "H49xNgg1hMV6LqXK6if2g8CYnrvp7CxQ5SJTnDRwPoS");
     assert.ok(page.promises[0].upPct > 0);
 

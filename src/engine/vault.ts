@@ -443,7 +443,7 @@ const unlockVotes = (project: ProjectState) => {
 
 const settleBurn = (project: ProjectState) => {
   const amount = sliceOf(n(project.balance));
-  project.burnBucket = s(n(project.burnBucket) + amount);
+  project.posBucket = s(n(project.posBucket) + amount);
   project.balance = s(n(project.balance) - amount);
   project.rolloverStreak = 0;
   stepDevLock(project, true);
@@ -452,7 +452,8 @@ const settleBurn = (project: ProjectState) => {
 
 const settlePay = (project: ProjectState) => {
   const amount = sliceOf(n(project.balance));
-  project.posBucket = s(n(project.posBucket) + amount);
+  project.released = s(n(project.released) + amount);
+  project.builderReceived = s(n(project.builderReceived) + amount);
   project.balance = s(n(project.balance) - amount);
   project.rolloverStreak = 0;
   stepDevLock(project, false);
@@ -469,8 +470,7 @@ export const executePosBuy = (
     return [];
   }
   project.posBought = s(n(project.posBought) + outAmount);
-  project.released = s(n(project.released) + amount);
-  project.builderReceived = s(n(project.builderReceived) + amount);
+  project.burned = s(n(project.burned) + amount);
   project.posBucket = "0";
   assertInvariant(project);
   return [

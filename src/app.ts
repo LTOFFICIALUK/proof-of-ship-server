@@ -435,8 +435,8 @@ export const buildApp = async (opts: AppOptions) => {
 
   const launchSteps = (body: z.infer<typeof launchSchema>) => [
     { title: "Create the coin", detail: "pump.fun create. Creator is your wallet." },
-    { title: "Fee sharing", detail: "create_fee_sharing_config for this mint." },
-    { title: "Lock the split", detail: "7,500 vault, 1,500 runway, 1,000 platform. Admin revoked." },
+    { title: "Fee sharing", detail: "create_fee_sharing_config for this mint. You stay the creator." },
+    { title: "Lock the split", detail: "7,500 vault PDA, 1,500 your wallet, 1,000 platform wallet. Admin revoked." },
     {
       title: "Dev buy",
       detail:
@@ -506,7 +506,7 @@ export const buildApp = async (opts: AppOptions) => {
       rules: [
         "The fee split cannot be changed by you or by us.",
         "You cannot withdraw the vault.",
-        "A pay vote spends 60 percent of the vault to buy $POS for you, and unlocks 20 percent of the remaining dev bag. A burn takes 60 percent. The rest stays.",
+        "A pay vote pays 60 percent of the vault to you in SOL, and unlocks 20 percent of the remaining dev bag. A burn vote spends 60 percent to buy $POS. The rest stays.",
       ],
     };
   });
@@ -877,7 +877,7 @@ export const buildApp = async (opts: AppOptions) => {
     const last = lastClosed(project);
     const line =
       last?.status === "paid"
-        ? `$${project.symbol} shipped v${last.idx + 1} · ${Number(BigInt(project.released) + BigInt(project.posBucket ?? "0")) / 1_000_000_000} SOL buying $POS`
+        ? `$${project.symbol} shipped v${last.idx + 1} · ${Number(project.released) / 1_000_000_000} SOL paid to the builder`
         : last?.status === "burned" || last?.status === "missed"
           ? `$${project.symbol} burned · ${Number(project.burned) / 1_000_000_000} SOL`
           : `$${project.symbol} · ${Number(project.balance) / 1_000_000_000} SOL in the vault`;

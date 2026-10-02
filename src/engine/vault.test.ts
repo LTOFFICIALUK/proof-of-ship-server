@@ -92,7 +92,7 @@ describe("fee split and invariant", () => {
 });
 
 describe("pay vote", () => {
-  it("queues 60 percent of the vault to buy POS when pay beats burn and quorum is met", () => {
+  it("pays 60 percent of the vault to the builder in SOL when pay beats burn and quorum is met", () => {
     const project = launch();
     creditFees(project, 10_000n, t0);
     const voter = "Voter11111111111111111111111111111111111111";
@@ -103,19 +103,39 @@ describe("pay vote", () => {
     castVote(project, voter, "pay", quorumAmount() + 1n);
     crank(project, t0 + DAY + VOTE_WINDOW_MS);
     assert.equal(project.promises[0].status, "paid");
-    assert.equal(project.posBucket, "4500");
-    assert.equal(project.released, "0");
+    assert.equal(project.posBucket, "0");
+    assert.equal(project.released, "4500");
     assert.equal(project.balance, "3000");
-    assert.equal(project.builderReceived, "0");
+    assert.equal(project.builderReceived, "4500");
     assert.equal(project.devLock, ((BigInt(lockedBefore) * 8_000n) / 10_000n).toString());
     assert.equal(project.devUnlocked, ((BigInt(lockedBefore) * 2_000n) / 10_000n).toString());
-    const events = executePosBuy(project, t0 + DAY + VOTE_WINDOW_MS, 9_000n);
+    assert.equal(project.balances[voter], String(quorumAmount() + 1n));
+    assert.equal(invariantHolds(project), true);
+  });
+});
+
+describe("burn vote", () => {
+  it("queues 60 percent of the vault to buy POS when burn wins", () => {
+    const project = launch();
+    creditFees(project, 10_000n, t0);
+    const voter = "Voter22222222222222222222222222222222222222";
+    airdrop(project, voter, quorumAmount());
+    markShipped(project, "https://github.com/proof", "done", t0 + DAY);
+    castVote(project, voter, "burn", quorumAmount());
+    finalizeVote(project, t0 + DAY + VOTE_WINDOW_MS);
+    assert.equal(project.promises[0].status, "burned");
+    assert.equal(project.posBucket, "4500");
+    assert.equal(project.burnBucket, "0");
+    assert.equal(project.released, "0");
+    assert.equal(project.builderReceived, "0");
+    assert.equal(project.balance, "3000");
+    const events = executePosBuy(project, t0, 9_000n);
     assert.equal(events[0]?.kind, "pos");
     assert.equal(project.posBucket, "0");
     assert.equal(project.posBought, "9000");
-    assert.equal(project.released, "4500");
-    assert.equal(project.builderReceived, "4500");
-    assert.equal(project.balances[voter], String(quorumAmount() + 1n));
+    assert.equal(project.released, "0");
+    assert.equal(project.builderReceived, "0");
+    assert.equal(project.burned, "4500");
     assert.equal(invariantHolds(project), true);
   });
 
@@ -126,7 +146,7 @@ describe("pay vote", () => {
     const voter = "VoterPos111111111111111111111111111111111111";
     airdrop(project, voter, quorumAmount());
     markShipped(project, "https://github.com/proof", "done", t0 + DAY);
-    castVote(project, voter, "pay", quorumAmount());
+    castVote(project, voter, "burn", quorumAmount());
     finalizeVote(project, t0 + DAY + VOTE_WINDOW_MS);
     const events = await fillPos(project, t0 + DAY + VOTE_WINDOW_MS);
     assert.equal(events.length, 0);
@@ -136,25 +156,6 @@ describe("pay vote", () => {
     setPosQuoter(async () => {
       throw new Error("not tradable");
     });
-  });
-});
-
-describe("burn vote", () => {
-  it("burns 60 percent of the vault when burn wins", () => {
-    const project = launch();
-    creditFees(project, 10_000n, t0);
-    const voter = "Voter22222222222222222222222222222222222222";
-    airdrop(project, voter, quorumAmount());
-    markShipped(project, "https://github.com/proof", "done", t0 + DAY);
-    castVote(project, voter, "burn", quorumAmount());
-    finalizeVote(project, t0 + DAY + VOTE_WINDOW_MS);
-    assert.equal(project.promises[0].status, "burned");
-    assert.equal(project.burnBucket, "4500");
-    assert.equal(project.balance, "3000");
-    executeBuybackBurn(project, t0);
-    assert.equal(project.burned, "4500");
-    assert.equal(project.burnBucket, "0");
-    assert.equal(invariantHolds(project), true);
   });
 });
 

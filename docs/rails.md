@@ -29,12 +29,14 @@ The brief is right that the vault address is permanent once admin is revoked, so
 
 `POST /v1/launch/build` returns the decoded steps. `POST /v1/launch/submit` still creates a demo project. Neither sends a pump.fun transaction.
 
-## Pay buys $POS
+## Pay pays SOL. Burn buys $POS
 
-Checked 2 Oct 2026.
+Checked 3 Oct 2026.
 
-A Pay vote moves 60 percent of the vault ledger into a $POS bucket and unlocks 20 percent of the remaining dev bag. The mint is `H49xNgg1hMV6LqXK6if2g8CYnrvp7CxQ5SJTnDRwPoS`.
+A Pay vote credits 60 percent of the vault to the builder in SOL on the ledger and unlocks 20 percent of the remaining dev bag. It does not buy $POS.
 
-The crank asks Jupiter for a quote and retries when the quote fails. A quote does not spend the bucket and does not mark tokens as bought. Jupiter returned `TOKEN_NOT_TRADABLE` for that mint. `getAccountInfo` on mainnet and devnet returned no account. No swap is sent, and launch still does not custody vault SOL.
+A burn vote (holders vote not to pay) moves 60 percent of the vault into a $POS bucket. The mint is `H49xNgg1hMV6LqXK6if2g8CYnrvp7CxQ5SJTnDRwPoS`. The crank asks Jupiter for a quote and retries when the quote fails. A quote does not spend the bucket and does not mark tokens as bought. Jupiter returned `TOKEN_NOT_TRADABLE` for that mint. `getAccountInfo` on mainnet and devnet returned no account. No swap is sent.
 
-Burn, a missed deadline, lapse, and abandon still account a buy and burn of the project coin. They do not buy $POS. SOL already in the $POS bucket stays there.
+A missed deadline, lapse, and abandon still account a buy and burn of the project coin. They do not buy $POS.
+
+Launch still does not custody vault SOL. The builder stays the pump.fun creator. Fee sharing is meant to split 7,500 to a per coin vault PDA, 1,500 to the builder wallet, and 1,000 to a platform treasury. Those wallets are not created yet. There is no PLATFORM_WALLET, vault key, or crank signer on Railway. `POST /v1/launch/submit` is still a demo ledger only.
