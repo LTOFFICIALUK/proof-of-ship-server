@@ -191,7 +191,7 @@ describe("quorum", () => {
 });
 
 describe("lapse", () => {
-  it("burns leftover vault if the next promise is not posted in 7 days", () => {
+  it("queues leftover vault to buy POS if the next promise is not posted in 7 days", () => {
     const project = launch();
     creditFees(project, 10_000n, t0);
     const voter = "Voter55555555555555555555555555555555555555";
@@ -205,10 +205,11 @@ describe("lapse", () => {
     assert.equal(events[0]?.kind, "lapse");
     assert.equal(project.status, "lapsed");
     assert.equal(project.balance, "0");
-    assert.equal(project.burnBucket, "10500");
+    assert.equal(project.posBucket, "10500");
+    assert.equal(project.burnBucket, "0");
   });
 
-  it("sends new fees to burn while lapsed, then vaults again after a new promise", () => {
+  it("sends new fees to buy POS while lapsed, then vaults again after a new promise", () => {
     const project = launch();
     const voter = "Voter66666666666666666666666666666666666666";
     airdrop(project, voter, quorumAmount());
@@ -216,9 +217,9 @@ describe("lapse", () => {
     castVote(project, voter, "pay", quorumAmount());
     finalizeVote(project, t0 + DAY + VOTE_WINDOW_MS);
     lapse(project, t0 + DAY + VOTE_WINDOW_MS + GRACE_MS);
-    executeBuybackBurn(project, t0);
     creditFees(project, 10_000n, t0 + 20 * DAY);
-    assert.equal(project.burnBucket, "7500");
+    assert.equal(project.posBucket, "7500");
+    assert.equal(project.burnBucket, "0");
     appendPromise(
       project,
       "Next build",

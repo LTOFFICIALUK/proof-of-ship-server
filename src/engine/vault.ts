@@ -220,7 +220,7 @@ export const creditFees = (
   project.accounted = s(n(project.accounted) + vaultShare);
 
   if (project.status === "lapsed") {
-    project.burnBucket = s(n(project.burnBucket) + vaultShare);
+    project.posBucket = s(n(project.posBucket) + vaultShare);
   } else {
     project.balance = s(n(project.balance) + vaultShare);
   }
@@ -639,7 +639,8 @@ export const lapse = (project: ProjectState, nowMs: number): EngineEvent[] => {
   }
 
   project.status = "lapsed";
-  project.burnBucket = s(n(project.burnBucket) + n(project.balance));
+  const amount = n(project.balance);
+  project.posBucket = s(n(project.posBucket) + amount);
   project.balance = "0";
   project.devLock = "0";
   assertInvariant(project);
@@ -648,7 +649,7 @@ export const lapse = (project: ProjectState, nowMs: number): EngineEvent[] => {
       kind: "lapse",
       atMs: nowMs,
       mint: project.mint,
-      detail: {},
+      detail: { amount: s(amount) },
     },
   ];
 };
