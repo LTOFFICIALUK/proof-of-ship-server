@@ -412,7 +412,7 @@ export const buildApp = async (opts: AppOptions) => {
     const wallet = await requireWallet(request);
     const link = await auth.getX(wallet);
     if (!link) {
-      throw badRequest("Link your X account before you launch");
+      throw badRequest("Verify your X account before you launch");
     }
     try {
       const builder = await opts.store.upsertBuilder(wallet, link.xHandle);
@@ -450,7 +450,7 @@ export const buildApp = async (opts: AppOptions) => {
   const createLaunch = async (wallet: string, body: z.infer<typeof launchSchema>, nowMs: number) => {
     const link = await auth.getX(wallet);
     if (!link) {
-      throw badRequest("Link your X account before you launch");
+      throw badRequest("Verify your X account before you launch");
     }
     let builder;
     try {
@@ -496,7 +496,7 @@ export const buildApp = async (opts: AppOptions) => {
     const wallet = await requireWallet(request);
     const link = await auth.getX(wallet);
     if (!link) {
-      throw badRequest("Link your X account before you launch");
+      throw badRequest("Verify your X account before you launch");
     }
     const body = launchSchema.parse(request.body);
     return {
