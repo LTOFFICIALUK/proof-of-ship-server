@@ -29,6 +29,9 @@ export type HolderVoteRow = {
   promiseIdx: number;
   wallet: string;
   side: "up" | "down";
+  reason: string;
+  message: string;
+  signature: string;
 };
 
 export type ShipStore = {
@@ -44,12 +47,7 @@ export type ShipStore = {
   listMessages: (mint: string, limit: number) => Promise<ChatRow[]>;
   addMessage: (mint: string, wallet: string, text: string, atMs: number) => Promise<ChatRow>;
   listHolderVotes: (mint: string) => Promise<HolderVoteRow[]>;
-  upsertHolderVote: (
-    mint: string,
-    promiseIdx: number,
-    wallet: string,
-    side: "up" | "down",
-  ) => Promise<void>;
+  upsertHolderVote: (row: HolderVoteRow) => Promise<void>;
 };
 
 export const createMemoryStore = (): ShipStore => {
@@ -128,15 +126,16 @@ export const createMemoryStore = (): ShipStore => {
       return row;
     },
     listHolderVotes: async (mint) => holderVotes.filter((row) => row.mint === mint),
-    upsertHolderVote: async (mint, promiseIdx, wallet, side) => {
+    upsertHolderVote: async (vote) => {
       const existing = holderVotes.find(
-        (row) => row.mint === mint && row.promiseIdx === promiseIdx && row.wallet === wallet,
+        (row) =>
+          row.mint === vote.mint && row.promiseIdx === vote.promiseIdx && row.wallet === vote.wallet,
       );
       if (existing) {
-        existing.side = side;
+        Object.assign(existing, vote);
         return;
       }
-      holderVotes.push({ mint, promiseIdx, wallet, side });
+      holderVotes.push({ ...vote });
     },
   };
 };

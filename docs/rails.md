@@ -26,3 +26,5 @@ Sources: [CREATOR_FEE_SHARING.md](https://github.com/pump-fun/pump-public-docs/b
 ## Conflict with the brief
 
 The brief is right that the vault address is permanent once admin is revoked, so it cannot be a server wallet we plan to migrate later. It is not yet proven that Pump will pay a system PDA on both the curve and after graduation. Do not build `ship_vault` until those two transfers are seen on a throwaway mainnet coin.
+
+`POST /v1/launch/build` returns the decoded steps. `POST /v1/launch/submit` still creates a demo project. Neither sends a pump.fun transaction.

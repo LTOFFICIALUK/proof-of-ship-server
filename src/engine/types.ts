@@ -55,9 +55,26 @@ export type VoteState = {
   extended?: boolean;
 };
 
+export type TallyRow = {
+  wallet: string;
+  side: VoteSide;
+  weight: string;
+  reason: string;
+  message: string;
+  signature: string;
+};
+
+export type ProofType = "link" | "repo" | "program" | "app" | "video";
+
 export type PromiseState = {
   idx: number;
   text: string;
+  doneLooksLike?: string;
+  proofType?: ProofType | "";
+  tally?: TallyRow[];
+  eligibleAtClose?: string;
+  closedAtMs?: number;
+  proofAtMs?: number;
   textHash: string;
   deadlineMs: number;
   postedAtMs: number;
@@ -95,6 +112,19 @@ export type ProjectState = {
   demo?: boolean;
   rolloverStreak?: number;
   excludedWallets?: string[];
+  verified?: boolean;
+  profile?: {
+    description: string;
+    website: string;
+    github: string;
+    image: string;
+    devBuyBps: number;
+  };
+  chain?: {
+    vault: string;
+    feeConfig: string;
+    revokeSig: string;
+  } | null;
 };
 
 export class EngineError extends Error {

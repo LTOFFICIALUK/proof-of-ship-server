@@ -89,7 +89,12 @@ export const createProject = (input: {
   builderWallet: string;
   xHandle: string;
   nowMs: number;
-  promises: { text: string; deadlineMs: number }[];
+  promises: {
+    text: string;
+    deadlineMs: number;
+    doneLooksLike?: string;
+    proofType?: PromiseState["proofType"];
+  }[];
   circulatingSupply?: bigint;
   devBuyBps?: number;
 }): { project: ProjectState; events: EngineEvent[] } => {
@@ -133,6 +138,8 @@ export const createProject = (input: {
     promises.push({
       idx: i,
       text,
+      doneLooksLike: raw.doneLooksLike?.trim() ?? "",
+      proofType: raw.proofType ?? "",
       textHash: hashPromise(text),
       deadlineMs: raw.deadlineMs,
       postedAtMs: input.nowMs,
@@ -169,9 +176,6 @@ export const createProject = (input: {
     rolloverStreak: 0,
     excludedWallets: [input.builderWallet],
   };
-  promises.forEach((item) => {
-    item.postedBalances = {};
-  });
 
   if (devLock > 0n) {
     setBalance(project, input.builderWallet, 0n);
@@ -250,6 +254,7 @@ export const appendPromise = (
   text: string,
   deadlineMs: number,
   nowMs: number,
+  extra: { doneLooksLike?: string; proofType?: PromiseState["proofType"] } = {},
 ): EngineEvent[] => {
   if (project.status === "abandoned") {
     throw new EngineError("ABANDONED", "Abandoned projects cannot add promises");
@@ -285,6 +290,8 @@ export const appendPromise = (
   project.promises.push({
     idx,
     text: trimmed,
+    doneLooksLike: extra.doneLooksLike?.trim() ?? "",
+    proofType: extra.proofType ?? "",
     textHash: hashPromise(trimmed),
     deadlineMs,
     postedAtMs: nowMs,
@@ -335,6 +342,7 @@ export const markShipped = (
   promise.proofUrl = proofUrl;
   promise.proofNote = note.trim();
   promise.proofBalances = { ...project.balances };
+  promise.proofAtMs = nowMs;
   promise.status = "vote_open";
   project.vote = {
     promiseIdx: promise.idx,
@@ -365,6 +373,7 @@ export const missDue = (project: ProjectState, nowMs: number): EngineEvent[] => 
     return [];
   }
   promise.status = "missed";
+  promise.closedAtMs = nowMs;
   const amount = sliceOf(n(project.balance));
   project.burnBucket = s(n(project.burnBucket) + amount);
   project.balance = s(n(project.balance) - amount);
@@ -435,6 +444,7 @@ const settleBurn = (project: ProjectState) => {
   project.balance = s(n(project.balance) - amount);
   project.rolloverStreak = 0;
   stepDevLock(project, true);
+  return amount;
 };
 
 const settlePay = (project: ProjectState) => {
@@ -444,16 +454,19 @@ const settlePay = (project: ProjectState) => {
   project.balance = s(n(project.balance) - amount);
   project.rolloverStreak = 0;
   stepDevLock(project, false);
+  return amount;
 };
 
 const settleRollover = (project: ProjectState) => {
   project.rolloverStreak = (project.rolloverStreak ?? 0) + 1;
   if ((project.rolloverStreak ?? 0) < 2) {
-    return;
+    return 0n;
   }
-  project.burnBucket = s(n(project.burnBucket) + n(project.balance));
+  const amount = n(project.balance);
+  project.burnBucket = s(n(project.burnBucket) + amount);
   project.balance = "0";
   project.rolloverStreak = 0;
+  return amount;
 };
 
 const afterVote = (project: ProjectState, promiseIdx: number, nowMs: number) => {
@@ -468,6 +481,7 @@ const afterVote = (project: ProjectState, promiseIdx: number, nowMs: number) => 
 export const finalizeVote = (
   project: ProjectState,
   nowMs: number,
+  eligibleSupply?: bigint,
 ): EngineEvent[] => {
   const vote = project.vote;
   if (!vote) {
@@ -483,12 +497,11 @@ export const finalizeVote = (
   }
 
   const locked = n(vote.payWeight) + n(vote.burnWeight);
-  const quorum =
-    (n(project.circulatingSupply) * BigInt(QUORUM_BPS)) / BigInt(BPS_DENOM);
+  const supply = eligibleSupply ?? n(project.circulatingSupply);
+  const quorum = (supply * BigInt(QUORUM_BPS)) / BigInt(BPS_DENOM);
 
   const pay = n(vote.payWeight);
   const burn = n(vote.burnWeight);
-  const supply = n(project.circulatingSupply);
   if (supply > 0n) {
     const payPct = Number((pay * 10000n) / supply) / 100;
     const burnPct = Number((burn * 10000n) / supply) / 100;
@@ -511,7 +524,8 @@ export const finalizeVote = (
     }
     unlockVotes(project);
     promise.status = "rolled";
-    settleRollover(project);
+    promise.closedAtMs = nowMs;
+    const swept = settleRollover(project);
     afterVote(project, promise.idx, nowMs);
     assertInvariant(project);
     return [
@@ -519,25 +533,27 @@ export const finalizeVote = (
         kind: "vote_roll",
         atMs: nowMs,
         mint: project.mint,
-        detail: { idx: promise.idx, reason: "no_quorum" },
+        detail: { idx: promise.idx, reason: "no_quorum", amount: s(swept) },
       },
     ];
   }
 
   unlockVotes(project);
   const tie = pay === burn;
+  let amount = 0n;
   if (tie || pay < burn) {
     if (tie) {
       promise.status = "rolled";
-      settleRollover(project);
+      amount = settleRollover(project);
     } else {
       promise.status = "burned";
-      settleBurn(project);
+      amount = settleBurn(project);
     }
   } else {
     promise.status = "paid";
-    settlePay(project);
+    amount = settlePay(project);
   }
+  promise.closedAtMs = nowMs;
   afterVote(project, promise.idx, nowMs);
   assertInvariant(project);
   const kind = promise.status === "paid" ? "vote_pay" : promise.status === "burned" ? "vote_burn" : "vote_roll";
@@ -551,40 +567,8 @@ export const finalizeVote = (
         pay: s(pay),
         burn: s(burn),
         tie,
+        amount: s(amount),
       },
-    },
-  ];
-};
-
-export const finalizeFromNet = (
-  project: ProjectState,
-  nowMs: number,
-  payWins: boolean,
-): EngineEvent[] => {
-  const vote = project.vote;
-  if (!vote || nowMs < vote.endMs) {
-    return [];
-  }
-  const promise = project.promises.find((item) => item.idx === vote.promiseIdx);
-  if (!promise) {
-    throw new EngineError("VOTE", "Missing promise for this vote");
-  }
-  unlockVotes(project);
-  if (payWins) {
-    promise.status = "paid";
-    settlePay(project);
-  } else {
-    promise.status = "burned";
-    settleBurn(project);
-  }
-  afterVote(project, promise.idx, nowMs);
-  assertInvariant(project);
-  return [
-    {
-      kind: payWins ? "vote_pay" : "vote_burn",
-      atMs: nowMs,
-      mint: project.mint,
-      detail: { idx: promise.idx, net: payWins ? "up" : "down" },
     },
   ];
 };

@@ -155,8 +155,12 @@ export const createPgStore = (): ShipStore => ({
       promise_idx: number;
       wallet: string;
       side: "up" | "down";
+      reason: string | null;
+      message: string | null;
+      signature: string | null;
     }>(
-      "SELECT mint, promise_idx, wallet, side FROM holder_votes WHERE mint = $1",
+      `SELECT mint, promise_idx, wallet, side, reason, message, signature
+       FROM holder_votes WHERE mint = $1`,
       [mint],
     );
     return result.rows.map((row): HolderVoteRow => ({
@@ -164,14 +168,22 @@ export const createPgStore = (): ShipStore => ({
       promiseIdx: Number(row.promise_idx),
       wallet: row.wallet,
       side: row.side === "down" ? "down" : "up",
+      reason: row.reason ?? "",
+      message: row.message ?? "",
+      signature: row.signature ?? "",
     }));
   },
-  upsertHolderVote: async (mint, promiseIdx, wallet, side) => {
+  upsertHolderVote: async (row) => {
     await query(
-      `INSERT INTO holder_votes (mint, promise_idx, wallet, side)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (mint, promise_idx, wallet) DO UPDATE SET side = EXCLUDED.side`,
-      [mint, promiseIdx, wallet, side],
+      `INSERT INTO holder_votes (mint, promise_idx, wallet, side, reason, message, signature)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (mint, promise_idx, wallet) DO UPDATE SET
+         side = EXCLUDED.side,
+         reason = EXCLUDED.reason,
+         message = EXCLUDED.message,
+         signature = EXCLUDED.signature,
+         updated_at = now()`,
+      [row.mint, row.promiseIdx, row.wallet, row.side, row.reason, row.message, row.signature],
     );
   },
 });

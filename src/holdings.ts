@@ -162,6 +162,26 @@ export const loadHoldings = async (project: ProjectState, wallets: string[]) => 
   return simHoldings(project, wallets);
 };
 
+export const snapshotBalances = async (
+  project: ProjectState,
+): Promise<Record<string, string>> => {
+  if (project.demo !== false || !heliusUrl()) {
+    return { ...project.balances };
+  }
+  try {
+    const chain = await loadChain(project.mint);
+    return Object.fromEntries(
+      [...chain.byOwner.entries()].map(([wallet, amount]) => [wallet, amount.toString()]),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("could not find account")) {
+      return {};
+    }
+    throw new Error("Could not read holders. Try again");
+  }
+};
+
 export const balanceOf = async (project: ProjectState, wallet: string) => {
   const holdings = await loadHoldings(project, [wallet]);
   return { ok: holdings.ok, amount: holdings.balances.get(wallet) ?? 0n };

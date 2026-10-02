@@ -69,6 +69,27 @@ export const verifySignIn = (message: string, signatureB64: string, now = Date.n
   return ok ? parsed : null;
 };
 
+export const voteMessage = (input: {
+  mint: string;
+  promiseIdx: number;
+  side: "pay" | "burn";
+  nonce: string;
+}) =>
+  `Proof of Ship vote\nMint: ${input.mint}\nPromise: ${input.promiseIdx}\nSide: ${input.side}\nNonce: ${input.nonce}`;
+
+export const verifyWalletSignature = (wallet: string, message: string, signatureB64: string) => {
+  try {
+    const signature = new Uint8Array(Buffer.from(signatureB64, "base64"));
+    const publicKey = bs58.decode(wallet);
+    if (signature.length !== 64 || publicKey.length !== 32) {
+      return false;
+    }
+    return nacl.sign.detached.verify(new TextEncoder().encode(message), signature, publicKey);
+  } catch {
+    return false;
+  }
+};
+
 export const newNonce = () => randomBytes(16).toString("hex");
 export const newSessionId = () => randomBytes(32).toString("hex");
 

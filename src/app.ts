@@ -9,9 +9,11 @@ import {
   newNonce,
   newSessionId,
   verifySignIn,
+  verifyWalletSignature,
+  voteMessage,
   type AuthStore,
 } from "./auth.js";
-import { EngineError } from "./engine/types.js";
+import { EngineError, type ProjectState } from "./engine/types.js";
 import {
   abandon,
   airdrop,
@@ -23,11 +25,25 @@ import {
 } from "./engine/vault.js";
 import { getNowMs, setNowMs } from "./clock.js";
 import { HttpError, badRequest, notFound, unauthorized } from "./lib/errors.js";
-import { balanceOf, loadHoldings, tallyVotes } from "./holdings.js";
+import { balanceOf, snapshotBalances } from "./holdings.js";
 import { loadMarket } from "./market.js";
-import { coinSlug, presentBuilder, presentFeed, presentProject } from "./presenters.js";
+import {
+  builderRecord,
+  coinSlug,
+  currentPromise,
+  feedMatches,
+  filterCoins,
+  lastClosed,
+  presentBuilder,
+  presentCard,
+  presentFeed,
+  presentProject,
+  siteStats,
+  type CoinFilter,
+} from "./presenters.js";
 import { advanceProject } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
+import { pctOf, voteWeight, weighVotes } from "./weights.js";
 
 const walletSchema = z
   .string()
@@ -35,10 +51,32 @@ const walletSchema = z
   .max(44)
   .regex(/^[1-9A-HJ-NP-Za-km-z]+$/);
 
+const linkSchema = z
+  .string()
+  .trim()
+  .max(200)
+  .refine((value) => value === "" || /^https:\/\/[^\s]+$/.test(value), "Links must start with https://")
+  .optional();
+
 const promiseSchema = z.object({
-  text: z.string().min(1).max(280),
+  title: z.string().trim().min(1, "Add a promise title").max(80, "Keep the title under 80 characters"),
+  doneLooksLike: z.string().trim().max(500, "Keep it under 500 characters").optional(),
+  proofType: z.enum(["link", "repo", "program", "app", "video"]).optional(),
   deadlineMs: z.number().int().positive(),
 });
+
+const PAGE_SIZE = 24;
+
+const escapeXml = (value: string) =>
+  value.replace(/[<>&"']/g, (char) => `&#${char.charCodeAt(0)};`);
+
+const badgeSvg = (left: string, right: string) => {
+  const width = Math.max(180, 44 + (left.length + right.length) * 7.4);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width)}" height="28" role="img" aria-label="${escapeXml(`${left}. ${right}`)}"><rect width="100%" height="28" rx="6" fill="#111112"/><rect x="10" y="9" width="5" height="10" fill="#f3f3f1"/><rect x="17" y="9" width="5" height="10" fill="#17803f"/><text x="30" y="18.5" fill="#f3f3f1" font-family="Geist, ui-sans-serif, system-ui" font-size="12" font-weight="600">${escapeXml(left)}</text><text x="${Math.round(36 + left.length * 7.4)}" y="18.5" fill="#a3a3a0" font-family="Geist, ui-sans-serif, system-ui" font-size="12">${escapeXml(right)}</text></svg>`;
+};
+
+const scoped = (projects: ProjectState[], scope: unknown) =>
+  projects.filter((project) => (scope === "demo" ? project.demo !== false : project.demo === false));
 
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -67,35 +105,73 @@ const presentLive = async (
 ) => {
   const view = presentProject(project, nowMs);
   const votes = await store.listHolderVotes(project.mint);
-  const holdings = await loadHoldings(
-    project,
-    [...new Set(votes.map((row) => row.wallet))],
-  );
   const market = await loadMarket(project.mint);
+  const promises = await Promise.all(
+    view.promises.map(async (item) => {
+      const state = project.promises.find((entry) => entry.idx === item.idx)!;
+      const rows = votes.filter((row) => row.promiseIdx === item.idx);
+      const mine = rows.find((row) => row.wallet === viewer);
+      const yourSide = mine ? (mine.side === "down" ? "burn" : "pay") : null;
+      if (item.status === "vote_open") {
+        const weighed = await weighVotes(project, state, rows);
+        return {
+          ...item,
+          upPct: null,
+          downPct: null,
+          netPct: null,
+          turnoutPct: weighed.ok ? pctOf(weighed.pay + weighed.burn, weighed.eligible) : null,
+          voters: rows.length,
+          yourSide,
+        };
+      }
+      if (state.tally) {
+        const base = BigInt(state.eligibleAtClose ?? project.circulatingSupply);
+        const pay = state.tally
+          .filter((row) => row.side === "pay")
+          .reduce((sum, row) => sum + BigInt(row.weight), 0n);
+        const burn = state.tally
+          .filter((row) => row.side === "burn")
+          .reduce((sum, row) => sum + BigInt(row.weight), 0n);
+        return {
+          ...item,
+          upPct: pctOf(pay, base),
+          downPct: pctOf(burn, base),
+          netPct: item.resultNet,
+          turnoutPct: pctOf(pay + burn, base),
+          voters: state.tally.length,
+          yourSide,
+        };
+      }
+      return {
+        ...item,
+        upPct: null,
+        downPct: null,
+        netPct: item.resultNet,
+        turnoutPct: null,
+        voters: rows.length,
+        yourSide,
+      };
+    }),
+  );
+  let viewerView = null;
+  if (viewer) {
+    const current = currentPromise(project);
+    const held = await balanceOf(project, viewer);
+    const weight = current && held.ok ? voteWeight(project, current, viewer, held.amount) : 0n;
+    viewerView = {
+      wallet: viewer,
+      isBuilder: viewer === project.builderWallet,
+      excluded: viewer === project.builderWallet || Boolean(project.excludedWallets?.includes(viewer)),
+      balance: held.ok ? held.amount.toString() : null,
+      weight: weight.toString(),
+      weightPct: pctOf(weight, BigInt(project.circulatingSupply)),
+    };
+  }
   return {
     ...view,
     market,
-    promises: view.promises.map((item) => {
-      const rows = votes.filter((row) => row.promiseIdx === item.idx);
-      const tally = holdings.ok
-        ? tallyVotes(rows, holdings.balances, holdings.supply)
-        : { upPct: 0, downPct: 0, netPct: 0 };
-      return {
-        ...item,
-        upPct: item.status === "vote_open" ? null : tally.upPct,
-        downPct: item.status === "vote_open" ? null : tally.downPct,
-        turnoutPct: tally.upPct + tally.downPct,
-        netPct:
-          item.status === "vote_open"
-            ? null
-            : rows.length
-              ? holdings.ok
-                ? tally.netPct
-                : null
-              : item.resultNet ?? (holdings.ok ? tally.netPct : null),
-        yourSide: rows.find((row) => row.wallet === viewer)?.side ?? null,
-      };
-    }),
+    promises,
+    viewer: viewerView,
   };
 };
 
@@ -332,20 +408,36 @@ export const buildApp = async (opts: AppOptions) => {
     }
   });
 
-  app.post("/v1/projects", async (request) => {
-    const wallet = await requireWallet(request);
+  const launchSchema = z.object({
+    name: z.string().trim().min(1, "Add a coin name").max(32),
+    symbol: z.string().trim().min(1, "Add a ticker").max(10),
+    description: z.string().trim().max(500).optional(),
+    image: linkSchema,
+    website: linkSchema,
+    github: linkSchema,
+    devBuyBps: z.number().int().min(0).max(300).optional(),
+    promise: promiseSchema,
+  });
+
+  const launchSteps = (body: z.infer<typeof launchSchema>) => [
+    { title: "Create the coin", detail: "pump.fun create. Creator is your wallet." },
+    { title: "Fee sharing", detail: "create_fee_sharing_config for this mint." },
+    { title: "Lock the split", detail: "7,500 vault, 1,500 runway, 1,000 platform. Admin revoked." },
+    {
+      title: "Dev buy",
+      detail:
+        (body.devBuyBps ?? 0) === 0
+          ? "No extra buy at launch."
+          : `Buy ${(body.devBuyBps ?? 0) / 100}% of supply. Builders still cannot vote.`,
+    },
+    { title: "Register the vault", detail: "ship_vault.init_project stores the first promise hash." },
+  ];
+
+  const createLaunch = async (wallet: string, body: z.infer<typeof launchSchema>, nowMs: number) => {
     const link = await auth.getX(wallet);
     if (!link) {
       throw badRequest("Link your X account before you launch");
     }
-    const body = z
-      .object({
-        name: z.string().min(1).max(32),
-        symbol: z.string().min(1).max(10),
-        promises: z.array(promiseSchema).min(1).max(20),
-      })
-      .parse(request.body);
-
     let builder;
     try {
       builder = await opts.store.upsertBuilder(wallet, link.xHandle);
@@ -356,49 +448,136 @@ export const buildApp = async (opts: AppOptions) => {
     if (existing.some((project) => project.status === "active" && project.demo !== false)) {
       throw badRequest("You already have an active launch", "ACTIVE_LAUNCH");
     }
-
     const created = createProject({
       mint: fakeMint(),
       name: body.name,
       symbol: body.symbol,
       builderWallet: wallet,
       xHandle: link.xHandle,
-      nowMs: at(request),
-      promises: body.promises,
+      nowMs,
+      devBuyBps: body.devBuyBps ?? 0,
+      promises: [
+        {
+          text: body.promise.title,
+          doneLooksLike: body.promise.doneLooksLike,
+          proofType: body.promise.proofType,
+          deadlineMs: body.promise.deadlineMs,
+        },
+      ],
     });
+    created.project.verified = true;
+    created.project.chain = null;
+    created.project.profile = {
+      description: body.description ?? "",
+      website: body.website ?? "",
+      github: body.github ?? "",
+      image: body.image ?? "",
+      devBuyBps: body.devBuyBps ?? 0,
+    };
     await persist(opts.store, builder.id, created.project, created.events);
-    return presentProject(created.project, at(request));
+    return created.project;
+  };
+
+  app.post("/v1/launch/build", async (request) => {
+    const wallet = await requireWallet(request);
+    const link = await auth.getX(wallet);
+    if (!link) {
+      throw badRequest("Link your X account before you launch");
+    }
+    const body = launchSchema.parse(request.body);
+    return {
+      mode: "demo",
+      listed: false,
+      steps: launchSteps(body),
+      rules: [
+        "The fee split cannot be changed by you or by us.",
+        "You cannot withdraw the vault.",
+        "A pay or burn takes 60 percent of the vault. The rest stays.",
+      ],
+    };
+  });
+
+  app.post("/v1/launch/submit", async (request) => {
+    const wallet = await requireWallet(request);
+    const body = launchSchema.parse(request.body);
+    const project = await createLaunch(wallet, body, at(request));
+    return { mode: "demo", listed: true, mint: project.mint, project: presentProject(project, at(request)) };
+  });
+
+  app.get("/v1/launch/:mint/status", async (request) => {
+    const { mint } = request.params as { mint: string };
+    const project = await loadProject(opts.store, mint);
+    return {
+      mint: project.mint,
+      listed: true,
+      mode: project.demo === false ? "chain" : "demo",
+      chain: project.chain ?? { vault: "", feeConfig: "", revokeSig: "" },
+      project: presentProject(project, at(request)),
+    };
+  });
+
+  app.post("/v1/projects", async (request) => {
+    const wallet = await requireWallet(request);
+    const body = launchSchema.parse(request.body);
+    return presentProject(await createLaunch(wallet, body, at(request)), at(request));
   });
 
   app.get("/v1/projects", async (request) => {
     const scope = (request.query as { scope?: string }).scope;
-    const projects = (await opts.store.listProjects()).filter((project) =>
-      scope === "demo" ? project.demo !== false : project.demo === false,
-    );
+    const projects = filterCoins(scoped(await opts.store.listProjects(), scope), "all");
+    return { projects: projects.map(presentCard) };
+  });
+
+  app.get("/v1/coins", async (request) => {
+    const query = z
+      .object({
+        filter: z.enum(["voting", "due", "shipped", "burned", "all"]).optional(),
+        scope: z.string().optional(),
+        page: z.coerce.number().int().min(1).max(500).optional(),
+      })
+      .parse(request.query);
+    const filter: CoinFilter = query.filter ?? "all";
+    const page = query.page ?? 1;
+    const all = filterCoins(scoped(await opts.store.listProjects(), query.scope), filter);
+    const start = (page - 1) * PAGE_SIZE;
     return {
-      projects: projects
-        .slice()
-        .sort((a, b) => (b.promises[0]?.postedAtMs ?? 0) - (a.promises[0]?.postedAtMs ?? 0))
-        .map((project) => ({
-          mint: project.mint,
-          slug: coinSlug(project),
-          name: project.name,
-          symbol: project.symbol,
-          status: project.status,
-          xHandle: project.xHandle,
-          builderWallet: project.builderWallet,
-          promise: project.promises[0]?.text ?? "",
-          balanceSol: Number(project.balance) / 1_000_000_000,
-          releasedSol: Number(project.released) / 1_000_000_000,
-          burnedSol: Number(project.burned) / 1_000_000_000,
-        })),
+      filter,
+      page,
+      total: all.length,
+      hasMore: start + PAGE_SIZE < all.length,
+      coins: all.slice(start, start + PAGE_SIZE).map(presentCard),
     };
   });
 
-  app.get("/v1/coins/:slug", async (request) => {
-    const { slug } = request.params as { slug: string };
+  app.get("/v1/stats", async (request) => {
+    const scope = (request.query as { scope?: string }).scope;
+    return siteStats(scoped(await opts.store.listProjects(), scope));
+  });
+
+  app.get("/v1/builders", async (request) => {
+    const scope = (request.query as { scope?: string }).scope;
+    const groups = new Map<string, ProjectState[]>();
+    for (const project of scoped(await opts.store.listProjects(), scope)) {
+      groups.set(project.xHandle, [...(groups.get(project.xHandle) ?? []), project]);
+    }
+    const builders = [...groups.entries()]
+      .map(([handle, projects]) => ({
+        handle,
+        verified: projects.some((project) => project.verified === true),
+        ...builderRecord(projects),
+      }))
+      .filter((row) => row.resolved > 0)
+      .sort((a, b) => b.shipped - a.shipped || (b.onTimePct ?? 0) - (a.onTimePct ?? 0))
+      .slice(0, 10);
+    return { builders };
+  });
+
+  app.get("/v1/coins/:mint", async (request) => {
+    const { mint } = request.params as { mint: string };
     const projects = await opts.store.listProjects();
-    const project = projects.find((item) => coinSlug(item) === slug);
+    const project =
+      projects.find((item) => item.mint === mint) ??
+      projects.find((item) => coinSlug(item) === mint);
     if (!project) {
       throw notFound("No coin with that page");
     }
@@ -406,60 +585,179 @@ export const buildApp = async (opts: AppOptions) => {
     return presentLive(opts.store, project, at(request), viewer ?? undefined);
   });
 
-  app.post("/v1/projects/:mint/promises/:idx/proof", async (request) => {
-    const wallet = await requireWallet(request);
-    const { mint, idx } = request.params as { mint: string; idx: string };
-    const body = z
-      .object({
-        url: z.string().min(1).max(300),
-        note: z.string().max(500).optional(),
-      })
-      .parse(request.body);
-    const project = await loadProject(opts.store, mint);
-    if (project.builderWallet !== wallet) {
-      throw badRequest("Only the builder can mark this as shipped");
+  const snapshot = async (project: ProjectState) => {
+    try {
+      return await snapshotBalances(project);
+    } catch {
+      throw new HttpError(503, "RPC", "Could not read holders. Try again");
     }
-    const promise = project.promises.find((item) => item.idx === Number(idx));
-    if (!promise) {
-      throw notFound("No promise with that number");
-    }
-    const builder = await opts.store.getBuilderByWallet(wallet);
-    if (!builder) {
-      throw notFound("Builder missing");
-    }
-    const events = markShipped(project, body.url, body.note ?? "", at(request));
-    await persist(opts.store, builder.id, project, events);
-    return presentLive(opts.store, project, at(request), wallet);
-  });
+  };
 
-  app.post("/v1/projects/:mint/promises/:idx/vote", async (request) => {
-    const wallet = await requireWallet(request);
-    const { mint, idx } = request.params as { mint: string; idx: string };
-    const body = z
-      .object({
-        side: z.enum(["up", "down"]),
-        reason: z.string().max(140).optional(),
-      })
-      .parse(request.body);
-    const promiseIdx = Number(idx);
-    const project = await loadProject(opts.store, mint);
-    const promise = project.promises.find((item) => item.idx === promiseIdx);
+  const openPromise = (project: ProjectState, idx: string) => {
+    const promise = project.promises.find((item) => item.idx === Number(idx));
     if (!promise || promise.status !== "vote_open") {
       throw badRequest("That promise is not open for votes");
     }
-    if (wallet === project.builderWallet) {
-      throw badRequest("Builders cannot vote on their own coins");
-    }
-    const held = await balanceOf(project, wallet);
-    if (!held.ok) {
-      throw badRequest("Could not read your balance");
-    }
-    if (held.amount <= 0n) {
-      throw badRequest("You need to hold this coin to vote");
-    }
-    await opts.store.upsertHolderVote(mint, promiseIdx, wallet, body.side);
-    return presentLive(opts.store, project, at(request), wallet);
-  });
+    return promise;
+  };
+
+  const sideSchema = z.enum(["pay", "burn"]);
+
+  for (const base of ["/v1/projects", "/v1/coins"]) {
+    app.post(`${base}/:mint/promises/:idx/proof`, async (request) => {
+      const wallet = await requireWallet(request);
+      const { mint, idx } = request.params as { mint: string; idx: string };
+      const body = z
+        .object({
+          url: z
+            .string()
+            .trim()
+            .min(1, "Add a proof link")
+            .max(300)
+            .refine((value) => /^https:\/\/[^\s]+$/.test(value), "Proof links must start with https://"),
+          note: z.string().trim().max(500).optional(),
+        })
+        .parse(request.body);
+      const project = await loadProject(opts.store, mint);
+      if (project.builderWallet !== wallet) {
+        throw badRequest("Only the builder can mark this as shipped");
+      }
+      const promise = project.promises.find((item) => item.idx === Number(idx));
+      if (!promise) {
+        throw notFound("No promise with that number");
+      }
+      if (promise.status !== "pending") {
+        throw badRequest("This promise is not waiting for proof");
+      }
+      const builder = await opts.store.getBuilderByWallet(wallet);
+      if (!builder) {
+        throw notFound("Builder missing");
+      }
+      const balances = await snapshot(project);
+      const events = markShipped(project, body.url, body.note ?? "", at(request));
+      promise.proofBalances = balances;
+      await persist(opts.store, builder.id, project, events);
+      return presentLive(opts.store, project, at(request), wallet);
+    });
+
+    app.get(`${base}/:mint/promises/:idx/vote-message`, async (request) => {
+      await requireWallet(request);
+      const { mint, idx } = request.params as { mint: string; idx: string };
+      const { side } = z.object({ side: sideSchema }).parse(request.query);
+      const project = await loadProject(opts.store, mint);
+      const promise = openPromise(project, idx);
+      const nonce = newNonce();
+      await auth.putNonce(nonce, Date.now() + 10 * 60 * 1000);
+      return {
+        nonce,
+        message: voteMessage({ mint: project.mint, promiseIdx: promise.idx, side, nonce }),
+      };
+    });
+
+    app.post(`${base}/:mint/promises/:idx/vote`, async (request) => {
+      const wallet = await requireWallet(request);
+      const { mint, idx } = request.params as { mint: string; idx: string };
+      const body = z
+        .object({
+          side: sideSchema,
+          reason: z.string().trim().max(140, "Keep the reason under 140 characters").optional(),
+          nonce: z.string().min(1).max(64),
+          signature: z.string().min(1).max(200),
+        })
+        .parse(request.body);
+      const project = await loadProject(opts.store, mint);
+      const promise = openPromise(project, idx);
+      if (wallet === project.builderWallet || project.excludedWallets?.includes(wallet)) {
+        throw badRequest("Builders cannot vote on their own coins");
+      }
+      const message = voteMessage({
+        mint: project.mint,
+        promiseIdx: promise.idx,
+        side: body.side,
+        nonce: body.nonce,
+      });
+      if (!verifyWalletSignature(wallet, message, body.signature)) {
+        throw unauthorized("That vote signature could not be verified");
+      }
+      if (!(await auth.takeNonce(body.nonce, Date.now()))) {
+        throw unauthorized("That vote expired. Sign it again");
+      }
+      const held = await balanceOf(project, wallet);
+      if (!held.ok) {
+        throw badRequest("Could not read your balance");
+      }
+      if (held.amount <= 0n) {
+        throw badRequest("You need to hold this coin to vote");
+      }
+      if (voteWeight(project, promise, wallet, held.amount) <= 0n) {
+        throw badRequest("Coins bought after the promise was posted do not count for this vote");
+      }
+      await opts.store.upsertHolderVote({
+        mint: project.mint,
+        promiseIdx: promise.idx,
+        wallet,
+        side: body.side === "burn" ? "down" : "up",
+        reason: body.side === "burn" ? body.reason ?? "" : "",
+        message,
+        signature: body.signature,
+      });
+      return presentLive(opts.store, project, at(request), wallet);
+    });
+
+    app.get(`${base}/:mint/promises/:idx/tally`, async (request, reply) => {
+      const { mint, idx } = request.params as { mint: string; idx: string };
+      const download = (request.query as { download?: string }).download === "1";
+      const project = await loadProject(opts.store, mint);
+      const promise = project.promises.find((item) => item.idx === Number(idx));
+      if (!promise) {
+        throw notFound("No promise with that number");
+      }
+      if (promise.status === "pending" || promise.status === "vote_open") {
+        const rows = (await opts.store.listHolderVotes(project.mint)).filter(
+          (row) => row.promiseIdx === promise.idx,
+        );
+        const weighed = await weighVotes(project, promise, rows);
+        return {
+          mint: project.mint,
+          promiseIdx: promise.idx,
+          open: true,
+          status: promise.status,
+          voters: rows.length,
+          turnoutPct: weighed.ok ? pctOf(weighed.pay + weighed.burn, weighed.eligible) : null,
+        };
+      }
+      const votes = promise.tally ?? [];
+      const sum = (side: "pay" | "burn") =>
+        votes.filter((row) => row.side === side).reduce((total, row) => total + BigInt(row.weight), 0n);
+      const body = {
+        mint: project.mint,
+        symbol: project.symbol,
+        promiseIdx: promise.idx,
+        promise: promise.text,
+        open: false,
+        status: promise.status,
+        closedAtMs: promise.closedAtMs ?? null,
+        eligibleSupply: promise.eligibleAtClose ?? project.circulatingSupply,
+        payWeight: sum("pay").toString(),
+        burnWeight: sum("burn").toString(),
+        resultNet: promise.resultNet ?? null,
+        messageFormat: voteMessage({
+          mint: "<mint>",
+          promiseIdx: promise.idx,
+          side: "pay",
+          nonce: "<nonce>",
+        }).replace("Side: pay", "Side: <pay|burn>"),
+        votes,
+      };
+      if (download) {
+        reply.header(
+          "content-disposition",
+          `attachment; filename="tally-${project.symbol.toLowerCase().replace(/[^a-z0-9]/g, "")}-${promise.idx}.json"`,
+        );
+      }
+      return body;
+    });
+  }
 
   app.get("/v1/projects/:mint/messages", async (request) => {
     const { mint } = request.params as { mint: string };
@@ -523,56 +821,94 @@ export const buildApp = async (opts: AppOptions) => {
     return presentBuilder(builder.xHandle, builder.wallet, projects);
   });
 
-  app.get("/v1/feed", async (request) => {
-    const scope = (request.query as { scope?: string }).scope;
-    const projects = await opts.store.listProjects();
-    const allowed = new Set(
-      projects
-        .filter((project) => (scope === "demo" ? project.demo !== false : project.demo === false))
-        .map((project) => project.mint),
-    );
-    const rows = (await opts.store.listFeed(80)).filter(
-      (row) => allowed.has(row.mint) && row.atMs <= at(request),
-    );
-    return { events: presentFeed(rows).slice(0, 50) };
-  });
-
-  app.get("/v1/badge/:mint.svg", async (request, reply) => {
-    const { mint } = request.params as { mint: string };
-    const project = await loadProject(opts.store, mint);
-    const last = [...project.promises].reverse().find((item) =>
-      ["paid", "burned"].includes(item.status),
-    );
-    const label = last
-      ? last.status === "paid"
-        ? "Last vote: Pay"
-        : "Last vote: Burn"
-      : "Vote pending";
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="36"><rect width="220" height="36" rx="6" fill="#111"/><text x="12" y="24" fill="#f4f0e6" font-family="ui-sans-serif" font-size="14">${project.symbol} · ${label}</text></svg>`;
-    return reply.type("image/svg+xml").send(svg);
-  });
-
-  app.post("/v1/projects/:mint/promises", async (request) => {
-    const wallet = await requireWallet(request);
-    const { mint } = request.params as { mint: string };
-    const body = z
-      .object({
-        text: z.string().min(1).max(280),
-        deadlineMs: z.number().int().positive(),
-      })
-      .parse(request.body);
-    const project = await loadProject(opts.store, mint);
-    if (project.builderWallet !== wallet) {
-      throw badRequest("Only the builder can add a promise", "FORBIDDEN");
-    }
-    const builder = await opts.store.getBuilderByWallet(wallet);
+  app.get("/v1/builders/:handle/badge.svg", async (request, reply) => {
+    const { handle } = request.params as { handle: string };
+    const builder = await opts.store.getBuilderByHandle(handle);
     if (!builder) {
-      throw notFound("Builder missing");
+      throw notFound("No builder with that handle");
     }
-    const events = appendPromise(project, body.text, body.deadlineMs, at(request));
-    await persist(opts.store, builder.id, project, events);
-    return presentProject(project, at(request));
+    const record = builderRecord(await opts.store.listProjectsByBuilder(builder.id));
+    const right =
+      record.onTimePct === null
+        ? `${record.shipped} shipped`
+        : `${record.shipped} shipped, ${record.onTimePct}% on time`;
+    return reply
+      .type("image/svg+xml")
+      .header("cache-control", "public, max-age=300")
+      .send(badgeSvg(`@${builder.xHandle}`, right));
   });
+
+  app.get("/v1/feed", async (request) => {
+    const query = z
+      .object({
+        scope: z.string().optional(),
+        filter: z.enum(["all", "shipped", "burned", "coins", "promises"]).optional(),
+      })
+      .parse(request.query);
+    const projects = scoped(await opts.store.listProjects(), query.scope);
+    const byMint = new Map(projects.map((project) => [project.mint, project]));
+    const rows = (await opts.store.listFeed(200)).filter(
+      (row) =>
+        byMint.has(row.mint) &&
+        row.atMs <= at(request) &&
+        row.kind !== "inflow" &&
+        feedMatches(row.kind, query.filter),
+    );
+    return { events: presentFeed(rows, byMint).slice(0, 50) };
+  });
+
+  app.get("/v1/coins/:mint/card.svg", async (request, reply) => {
+    const { mint } = request.params as { mint: string };
+    const project = await loadProject(opts.store, mint);
+    const last = lastClosed(project);
+    const line =
+      last?.status === "paid"
+        ? `$${project.symbol} shipped v${last.idx + 1} · ${Number(project.released) / 1_000_000_000} SOL paid`
+        : last?.status === "burned" || last?.status === "missed"
+          ? `$${project.symbol} burned · ${Number(project.burned) / 1_000_000_000} SOL`
+          : `$${project.symbol} · ${Number(project.balance) / 1_000_000_000} SOL in the vault`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" role="img" aria-label="${escapeXml(line)}"><rect width="1200" height="630" fill="#F3F3F1"/><rect x="72" y="72" width="88" height="88" rx="19" fill="#111112"/><rect x="91" y="123" width="19" height="19" fill="#4A4A4D"/><rect x="122" y="123" width="19" height="19" fill="#FFFFFF"/><text x="184" y="118" fill="#111112" font-family="Geist, ui-sans-serif" font-size="42" font-weight="600">${escapeXml(project.name)}</text><text x="184" y="156" fill="#6E6E73" font-family="Geist Mono, ui-monospace" font-size="22">$${escapeXml(project.symbol)}</text><text x="72" y="320" fill="#111112" font-family="Geist, ui-sans-serif" font-size="48" font-weight="600">${escapeXml(line)}</text><text x="72" y="540" fill="#6E6E73" font-family="Geist, ui-sans-serif" font-size="22">Proof of Ship</text></svg>`;
+    return reply.type("image/svg+xml").header("cache-control", "public, max-age=120").send(svg);
+  });
+
+  app.get("/v1/badge/:file", async (request, reply) => {
+    const { file } = request.params as { file: string };
+    if (!file.endsWith(".svg")) {
+      throw notFound("No badge with that name");
+    }
+    const project = await loadProject(opts.store, file.slice(0, -4));
+    const record = builderRecord([project]);
+    const right = `${record.shipped} shipped, ${record.burned + record.missed} burned`;
+    return reply
+      .type("image/svg+xml")
+      .header("cache-control", "public, max-age=300")
+      .send(badgeSvg(`$${project.symbol}`, right));
+  });
+
+  for (const base of ["/v1/projects", "/v1/coins"]) {
+    app.post(`${base}/:mint/promises`, async (request) => {
+      const wallet = await requireWallet(request);
+      const { mint } = request.params as { mint: string };
+      const body = promiseSchema.parse(request.body);
+      const project = await loadProject(opts.store, mint);
+      if (project.builderWallet !== wallet) {
+        throw badRequest("Only the builder can add a promise", "FORBIDDEN");
+      }
+      const builder = await opts.store.getBuilderByWallet(wallet);
+      if (!builder) {
+        throw notFound("Builder missing");
+      }
+      const balances = await snapshot(project);
+      const events = appendPromise(project, body.title, body.deadlineMs, at(request), {
+        doneLooksLike: body.doneLooksLike,
+        proofType: body.proofType,
+      });
+      const posted = project.promises[project.promises.length - 1];
+      posted.postedBalances = balances;
+      await persist(opts.store, builder.id, project, events);
+      return presentLive(opts.store, project, at(request), wallet);
+    });
+  }
 
   app.post("/v1/projects/:mint/abandon", async (request) => {
     const wallet = await requireWallet(request);
@@ -588,7 +924,7 @@ export const buildApp = async (opts: AppOptions) => {
     const events = abandon(project, at(request));
     events.push(...crank(project, at(request)));
     await persist(opts.store, builder.id, project, events);
-    return presentProject(project, at(request));
+    return presentLive(opts.store, project, at(request), wallet);
   });
 
   app.post("/v1/crank", async (request) => {
