@@ -1,6 +1,7 @@
 import { creditVaultInflow } from "./engine/vault.js";
 import type { ProjectState } from "./engine/types.js";
 import { logger } from "./logger.js";
+import { payCuts } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
 import { treasury } from "./wallets.js";
 
@@ -97,8 +98,11 @@ export const ingestVaultInflows = async (store: ShipStore, nowMs: number) => {
       paid: project.chain?.paid ?? "0",
       posSpent: project.chain?.posSpent ?? "0",
       burnSpent: project.chain?.burnSpent ?? "0",
+      runwaySent: project.chain?.runwaySent ?? "0",
+      platformSent: project.chain?.platformSent ?? "0",
       lastInflowSig: signature,
     };
+    events.push(...(await payCuts(project, nowMs)));
     await store.saveProject(builder.id, project);
     await store.appendEvents(events);
     credited += 1;

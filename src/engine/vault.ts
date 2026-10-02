@@ -243,40 +243,9 @@ export const creditFees = (
 
 export const creditVaultInflow = (
   project: ProjectState,
-  vaultLamports: bigint,
+  creatorLamports: bigint,
   nowMs: number,
-): EngineEvent[] => {
-  if (project.status === "abandoned") {
-    throw new EngineError("ABANDONED", "This project was abandoned");
-  }
-  if (vaultLamports <= 0n) {
-    throw new EngineError("FEES", "Fee amount must be greater than zero");
-  }
-  const runwayShare = (vaultLamports * BigInt(RUNWAY_BPS)) / BigInt(VAULT_BPS);
-  const platformShare = (vaultLamports * BigInt(PLATFORM_BPS)) / BigInt(VAULT_BPS);
-  project.runwayPaid = s(n(project.runwayPaid) + runwayShare);
-  project.platformPaid = s(n(project.platformPaid) + platformShare);
-  project.accounted = s(n(project.accounted) + vaultLamports);
-  if (project.status === "lapsed") {
-    project.burnBucket = s(n(project.burnBucket) + vaultLamports);
-  } else {
-    project.balance = s(n(project.balance) + vaultLamports);
-  }
-  assertInvariant(project);
-  return [
-    {
-      kind: "inflow",
-      atMs: nowMs,
-      mint: project.mint,
-      detail: {
-        vault: s(vaultLamports),
-        runway: s(runwayShare),
-        platform: s(platformShare),
-        lapsed: project.status === "lapsed",
-      },
-    },
-  ];
-};
+): EngineEvent[] => creditFees(project, creatorLamports, nowMs);
 
 export const airdrop = (
   project: ProjectState,

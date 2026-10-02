@@ -132,6 +132,8 @@ export type ProjectState = {
     paid?: string;
     posSpent?: string;
     burnSpent?: string;
+    runwaySent?: string;
+    platformSent?: string;
     lastInflowSig?: string;
   } | null;
 };

@@ -91,9 +91,9 @@ describe("fee split and invariant", () => {
     assert.equal(invariantHolds(project), true);
   });
 
-  it("credits a vault deposit as already split SOL", () => {
+  it("credits a vault deposit as the full creator fee, then splits 75 15 10", () => {
     const project = launch();
-    creditVaultInflow(project, 7500n, t0);
+    creditVaultInflow(project, 10_000n, t0);
     assert.equal(project.balance, "7500");
     assert.equal(project.runwayPaid, "1500");
     assert.equal(project.platformPaid, "1000");

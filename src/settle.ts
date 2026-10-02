@@ -13,6 +13,49 @@ const ensureChain = (project: ProjectState) => {
   project.chain = { ...destinations(), ...project.chain };
 };
 
+export const payCuts = async (project: ProjectState, at: number): Promise<EngineEvent[]> => {
+  const events: EngineEvent[] = [];
+  const keys = treasury();
+  if (!keys.vaultSigner) {
+    return events;
+  }
+  ensureChain(project);
+  const chain = project.chain!;
+  const owedRunway = n(project.runwayPaid) - n(chain.runwaySent);
+  if (owedRunway > 0n) {
+    try {
+      const sig = await sendSolFromVault(project.builderWallet, owedRunway);
+      chain.runwaySent = (n(chain.runwaySent) + owedRunway).toString();
+      events.push({
+        kind: "inflow",
+        atMs: at,
+        mint: project.mint,
+        detail: { runway: owedRunway.toString(), sig: sig || "", to: project.builderWallet },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("runway send waiting", { mint: project.mint, message });
+    }
+  }
+  const owedPlatform = n(project.platformPaid) - n(chain.platformSent);
+  if (owedPlatform > 0n && keys.platform) {
+    try {
+      const sig = await sendSolFromVault(keys.platform, owedPlatform);
+      chain.platformSent = (n(chain.platformSent) + owedPlatform).toString();
+      events.push({
+        kind: "inflow",
+        atMs: at,
+        mint: project.mint,
+        detail: { platform: owedPlatform.toString(), sig: sig || "", to: keys.platform },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("platform send waiting", { mint: project.mint, message });
+    }
+  }
+  return events;
+};
+
 export const flushChain = async (project: ProjectState, at: number): Promise<EngineEvent[]> => {
   const events: EngineEvent[] = [];
   if (!treasury().vaultSigner) {
@@ -20,6 +63,7 @@ export const flushChain = async (project: ProjectState, at: number): Promise<Eng
   }
   ensureChain(project);
   const chain = project.chain!;
+  events.push(...(await payCuts(project, at)));
 
   const owedPay = n(project.released) - n(chain.paid);
   if (owedPay > 0n) {

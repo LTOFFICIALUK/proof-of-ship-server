@@ -42,7 +42,7 @@ import {
 import { claimMint, depositMint, readyCount } from "./mint-bank.js";
 import { advanceProject } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
-import { destinations, MINT_SUFFIX, treasury } from "./wallets.js";
+import { destinations, MINT_SUFFIX, pumpFeeShares, treasury } from "./wallets.js";
 import { pctOf, voteWeight, weighVotes } from "./weights.js";
 
 const walletSchema = z
@@ -437,10 +437,10 @@ export const buildApp = async (opts: AppOptions) => {
         title: "Take a mint from the bank",
         detail: `The contract address ends in ${MINT_SUFFIX}. The bank hands one over and starts grinding a replacement.`,
       },
-      { title: "You stay the creator", detail: "Your wallet is the pump.fun creator and the 15 percent runway address." },
+      { title: "You stay the creator", detail: "Your wallet is the pump.fun creator. Creator fees do not land in it." },
       {
-        title: "Lock the split",
-        detail: `75 percent to the vault ${keys.vault || "Pending"}, 15 percent to you, 10 percent to the platform ${keys.platform || "Pending"}.`,
+        title: "Fees go to the vault we control",
+        detail: `pump.fun pays 100 percent of creator fees to ${keys.vault || "Pending"}. We then send you 15 percent as runway, send 10 percent to the platform, and hold 75 percent for holder votes.`,
       },
       {
         title: "Dev buy",
@@ -520,11 +520,12 @@ export const buildApp = async (opts: AppOptions) => {
       suffix: MINT_SUFFIX,
       readyMints: await readyCount(),
       destinations: { vault: keys.vault, platform: keys.platform, crank: keys.crank, runway: wallet },
+      pumpShares: pumpFeeShares(),
       steps: launchSteps(body),
       rules: [
         "The fee split cannot be changed by you or by us.",
         "You cannot withdraw the vault.",
-        "A pay vote pays 60 percent of the vault to you in SOL, and unlocks 20 percent of the remaining dev bag. A burn vote spends 60 percent to buy $POS. The rest stays.",
+        "Creator fees land in the vault wallet we control. We send you 15 percent as runway. We hold 75 percent until holders vote. A pay vote pays 60 percent of the vault to you in SOL. A burn vote spends 60 percent to buy $POS.",
       ],
     };
   });
@@ -556,7 +557,9 @@ export const buildApp = async (opts: AppOptions) => {
       vault: keys.vault,
       platform: keys.platform,
       crank: keys.crank,
+      pumpShares: pumpFeeShares(),
       split: { vaultBps: 7500, runwayBps: 1500, platformBps: 1000 },
+      note: "pump.fun pays 100 percent of creator fees to the vault. We then send runway and platform cuts from that wallet.",
     };
   });
 

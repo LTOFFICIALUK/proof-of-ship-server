@@ -44,6 +44,14 @@ export const treasury = () => {
   };
 };
 
+export const pumpFeeShares = () => {
+  const keys = treasury();
+  if (!keys.vault) {
+    return [];
+  }
+  return [{ address: keys.vault, bps: 10_000, role: "vault" as const }];
+};
+
 export const destinations = () => {
   const keys = treasury();
   return {
@@ -55,6 +63,8 @@ export const destinations = () => {
     paid: "0",
     posSpent: "0",
     burnSpent: "0",
+    runwaySent: "0",
+    platformSent: "0",
     lastInflowSig: "",
   };
 };
