@@ -29,7 +29,7 @@ export type EngineEvent = {
   detail: Record<string, string | number | boolean>;
 };
 
-const n = (value: string) => BigInt(value);
+const n = (value: string | undefined) => BigInt(value ?? "0");
 const s = (value: bigint) => value.toString();
 
 export const hashPromise = (text: string) =>
@@ -40,6 +40,7 @@ export const invariantHolds = (project: ProjectState) => {
     n(project.released) +
     n(project.burned) +
     n(project.burnBucket) +
+    n(project.posBucket) +
     n(project.balance);
   return left === n(project.accounted);
 };
@@ -48,7 +49,7 @@ const assertInvariant = (project: ProjectState) => {
   if (!invariantHolds(project)) {
     throw new EngineError(
       "INVARIANT",
-      "released + burned + burn bucket + balance must equal inflow",
+      "released + burned + burn bucket + POS bucket + balance must equal inflow",
     );
   }
 };
@@ -163,6 +164,8 @@ export const createProject = (input: {
     burned: "0",
     burnBucket: "0",
     balance: "0",
+    posBucket: "0",
+    posBought: "0",
     runwayPaid: "0",
     platformPaid: "0",
     builderReceived: "0",
@@ -449,12 +452,35 @@ const settleBurn = (project: ProjectState) => {
 
 const settlePay = (project: ProjectState) => {
   const amount = sliceOf(n(project.balance));
-  project.released = s(n(project.released) + amount);
-  project.builderReceived = s(n(project.builderReceived) + amount);
+  project.posBucket = s(n(project.posBucket) + amount);
   project.balance = s(n(project.balance) - amount);
   project.rolloverStreak = 0;
   stepDevLock(project, false);
   return amount;
+};
+
+export const executePosBuy = (
+  project: ProjectState,
+  nowMs: number,
+  outAmount: bigint,
+): EngineEvent[] => {
+  const amount = n(project.posBucket);
+  if (amount === 0n || outAmount <= 0n) {
+    return [];
+  }
+  project.posBought = s(n(project.posBought) + outAmount);
+  project.released = s(n(project.released) + amount);
+  project.builderReceived = s(n(project.builderReceived) + amount);
+  project.posBucket = "0";
+  assertInvariant(project);
+  return [
+    {
+      kind: "pos",
+      atMs: nowMs,
+      mint: project.mint,
+      detail: { amount: s(amount), pos: s(outAmount) },
+    },
+  ];
 };
 
 const settleRollover = (project: ProjectState) => {

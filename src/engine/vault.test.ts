@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { fillPos } from "../settle.js";
+import { setPosQuoter } from "../pos.js";
 import {
   DEFAULT_SUPPLY,
   GRACE_MS,
@@ -17,6 +19,7 @@ import {
   createProject,
   creditFees,
   executeBuybackBurn,
+  executePosBuy,
   finalizeVote,
   invariantHolds,
   lapse,
@@ -89,21 +92,50 @@ describe("fee split and invariant", () => {
 });
 
 describe("pay vote", () => {
-  it("pays 60 percent of the vault when pay beats burn and quorum is met", () => {
+  it("queues 60 percent of the vault to buy POS when pay beats burn and quorum is met", () => {
     const project = launch();
     creditFees(project, 10_000n, t0);
     const voter = "Voter11111111111111111111111111111111111111";
     airdrop(project, voter, quorumAmount() + 1n);
     markShipped(project, "https://github.com/proof", "done", t0 + DAY);
     assert.equal(project.vote?.promiseIdx, 0);
+    const lockedBefore = project.devLock;
     castVote(project, voter, "pay", quorumAmount() + 1n);
     crank(project, t0 + DAY + VOTE_WINDOW_MS);
     assert.equal(project.promises[0].status, "paid");
-    assert.equal(project.released, "4500");
+    assert.equal(project.posBucket, "4500");
+    assert.equal(project.released, "0");
     assert.equal(project.balance, "3000");
+    assert.equal(project.builderReceived, "0");
+    assert.equal(project.devLock, ((BigInt(lockedBefore) * 8_000n) / 10_000n).toString());
+    assert.equal(project.devUnlocked, ((BigInt(lockedBefore) * 2_000n) / 10_000n).toString());
+    const events = executePosBuy(project, t0 + DAY + VOTE_WINDOW_MS, 9_000n);
+    assert.equal(events[0]?.kind, "pos");
+    assert.equal(project.posBucket, "0");
+    assert.equal(project.posBought, "9000");
+    assert.equal(project.released, "4500");
     assert.equal(project.builderReceived, "4500");
     assert.equal(project.balances[voter], String(quorumAmount() + 1n));
     assert.equal(invariantHolds(project), true);
+  });
+
+  it("fills the queued SOL when a POS quote lands", async () => {
+    setPosQuoter(async (lamports) => lamports * 2n);
+    const project = launch();
+    creditFees(project, 10_000n, t0);
+    const voter = "VoterPos111111111111111111111111111111111111";
+    airdrop(project, voter, quorumAmount());
+    markShipped(project, "https://github.com/proof", "done", t0 + DAY);
+    castVote(project, voter, "pay", quorumAmount());
+    finalizeVote(project, t0 + DAY + VOTE_WINDOW_MS);
+    const events = await fillPos(project, t0 + DAY + VOTE_WINDOW_MS);
+    assert.equal(events[0]?.kind, "pos");
+    assert.equal(project.posBucket, "0");
+    assert.equal(project.posBought, "9000");
+    assert.equal(project.released, "4500");
+    setPosQuoter(async () => {
+      throw new Error("not tradable");
+    });
   });
 });
 

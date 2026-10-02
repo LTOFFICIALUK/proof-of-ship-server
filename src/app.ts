@@ -18,7 +18,6 @@ import {
   abandon,
   airdrop,
   appendPromise,
-  crank,
   createProject,
   creditFees,
   markShipped,
@@ -507,7 +506,7 @@ export const buildApp = async (opts: AppOptions) => {
       rules: [
         "The fee split cannot be changed by you or by us.",
         "You cannot withdraw the vault.",
-        "A pay or burn takes 60 percent of the vault. The rest stays.",
+        "A pay vote spends 60 percent of the vault to buy $POS for you, and unlocks 20 percent of the remaining dev bag. A burn takes 60 percent. The rest stays.",
       ],
     };
   });
@@ -878,7 +877,7 @@ export const buildApp = async (opts: AppOptions) => {
     const last = lastClosed(project);
     const line =
       last?.status === "paid"
-        ? `$${project.symbol} shipped v${last.idx + 1} · ${Number(project.released) / 1_000_000_000} SOL paid`
+        ? `$${project.symbol} shipped v${last.idx + 1} · ${Number(BigInt(project.released) + BigInt(project.posBucket ?? "0")) / 1_000_000_000} SOL buying $POS`
         : last?.status === "burned" || last?.status === "missed"
           ? `$${project.symbol} burned · ${Number(project.burned) / 1_000_000_000} SOL`
           : `$${project.symbol} · ${Number(project.balance) / 1_000_000_000} SOL in the vault`;
@@ -937,7 +936,7 @@ export const buildApp = async (opts: AppOptions) => {
       throw notFound("Builder missing");
     }
     const events = abandon(project, at(request));
-    events.push(...crank(project, at(request)));
+    events.push(...(await advanceProject(opts.store, project, at(request))));
     await persist(opts.store, builder.id, project, events);
     return presentLive(opts.store, project, at(request), wallet);
   });
@@ -980,7 +979,7 @@ export const buildApp = async (opts: AppOptions) => {
         throw notFound("Builder missing");
       }
       const events = creditFees(project, BigInt(body.lamports), at(request));
-      events.push(...crank(project, at(request)));
+      events.push(...(await advanceProject(opts.store, project, at(request))));
       await persist(opts.store, builder.id, project, events);
       return presentProject(project, at(request));
     });

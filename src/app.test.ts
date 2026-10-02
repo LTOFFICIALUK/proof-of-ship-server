@@ -5,6 +5,7 @@ import bs58 from "bs58";
 import { createMemoryAuth, signInMessage, verifyWalletSignature } from "./auth.js";
 import { DEFAULT_SUPPLY, QUORUM_BPS, VOTE_WINDOW_MS } from "./engine/types.js";
 import { buildApp } from "./app.js";
+import { setPosQuoter } from "./pos.js";
 import { createMemoryStore } from "./store/memory.js";
 
 type App = Awaited<ReturnType<typeof buildApp>>;
@@ -104,6 +105,9 @@ describe("http e2e", () => {
     });
 
   before(async () => {
+    setPosQuoter(async () => {
+      throw new Error("not tradable");
+    });
     clock = t0;
     auth = createMemoryAuth();
     app = await buildApp({
@@ -179,7 +183,9 @@ describe("http e2e", () => {
 
     const page = (await app.inject({ method: "GET", url: `/v1/projects/${mint}` })).json();
     assert.equal(page.promises[0].status, "paid");
-    assert.equal(page.vault.released, "450000000");
+    assert.equal(page.vault.posBucket, "450000000");
+    assert.equal(page.vault.released, "0");
+    assert.equal(page.vault.posMint, "H49xNgg1hMV6LqXK6if2g8CYnrvp7CxQ5SJTnDRwPoS");
     assert.ok(page.promises[0].upPct > 0);
 
     const tally = await app.inject({

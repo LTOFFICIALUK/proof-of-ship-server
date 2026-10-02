@@ -37,7 +37,8 @@ export type FeedKind =
   | "abandon"
   | "inflow"
   | "release"
-  | "burn";
+  | "burn"
+  | "pos";
 
 export type VoteLock = {
   wallet: string;
@@ -100,6 +101,8 @@ export type ProjectState = {
   burned: string;
   burnBucket: string;
   balance: string;
+  posBucket: string;
+  posBought: string;
   runwayPaid: string;
   platformPaid: string;
   builderReceived: string;

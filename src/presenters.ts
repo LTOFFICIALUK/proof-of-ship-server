@@ -1,5 +1,6 @@
 import type { ProjectState, PromiseState } from "./engine/types.js";
 import { QUORUM_BPS } from "./engine/types.js";
+import { POS_MINT } from "./pos.js";
 import type { FeedRow } from "./store/memory.js";
 
 const lamportsToSol = (lamports: string) => Number(lamports) / 1_000_000_000;
@@ -63,6 +64,9 @@ export const presentProject = (project: ProjectState, nowMs: number) => {
       burnedSol: lamportsToSol(project.burned),
       burnBucketSol: lamportsToSol(project.burnBucket),
       balanceSol: lamportsToSol(project.balance),
+      posBucketSol: lamportsToSol(project.posBucket ?? "0"),
+      posBought: project.posBought ?? "0",
+      posMint: POS_MINT,
       runwaySol: lamportsToSol(project.runwayPaid),
       platformSol: lamportsToSol(project.platformPaid),
       builderReceivedSol: lamportsToSol(project.builderReceived),
@@ -71,8 +75,10 @@ export const presentProject = (project: ProjectState, nowMs: number) => {
       burned: project.burned,
       burnBucket: project.burnBucket,
       balance: project.balance,
+      posBucket: project.posBucket ?? "0",
     },
     devLock: project.devLock,
+    devUnlocked: project.devUnlocked,
     nextDueAtMs: project.nextDueAtMs,
     promises: project.promises.map(presentPromise),
     vote: project.vote
@@ -167,6 +173,7 @@ export const builderRecord = (projects: ProjectState[]) => {
     resolved,
     onTimePct: resolved ? Math.round((onTime / resolved) * 100) : null,
     earnedSol: Number(sum((project) => project.builderReceived)) / 1_000_000_000,
+    posBought: sum((project) => project.posBought ?? "0").toString(),
     burnedSol: Number(sum((project) => project.burned) + sum((project) => project.burnBucket)) / 1_000_000_000,
     launches: projects.length,
     abandoned: projects.filter((project) => project.status === "abandoned").length,
@@ -209,7 +216,7 @@ export const presentBuilder = (
 };
 
 const FEED_GROUPS: Record<string, string[]> = {
-  shipped: ["vote_pay"],
+  shipped: ["vote_pay", "pos"],
   burned: ["vote_burn", "miss", "burn", "lapse", "abandon"],
   coins: ["launch"],
   promises: ["promise", "vote_open"],
@@ -250,7 +257,7 @@ export const siteStats = (projects: ProjectState[]) => {
   return {
     launched: projects.length,
     lockedSol: sum((project) => project.balance),
-    paidSol: sum((project) => project.released),
+    paidSol: sum((project) => project.released) + sum((project) => project.posBucket ?? "0"),
     burnedSol: sum((project) => project.burned) + sum((project) => project.burnBucket),
     shipped: promises.filter((item) => item.status === "paid").length,
     missed: promises.filter((item) => item.status === "missed" || item.status === "burned").length,
