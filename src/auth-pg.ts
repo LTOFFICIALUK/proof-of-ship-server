@@ -34,11 +34,19 @@ export const createPgAuth = (): AuthStore => ({
     await query("DELETE FROM auth_sessions WHERE id = $1", [id]);
   },
   linkX: async (wallet, xUserId, xHandle) => {
+    const handle = xHandle.replace(/^@/, "");
+    const taken = await query<{ wallet: string }>(
+      "SELECT wallet FROM x_links WHERE wallet <> $1 AND (x_user_id = $2 OR x_handle = $3)",
+      [wallet, xUserId, handle],
+    );
+    if (taken.rowCount) {
+      throw new Error("X account already linked");
+    }
     await query(
       `INSERT INTO x_links (wallet, x_user_id, x_handle)
        VALUES ($1, $2, $3)
        ON CONFLICT (wallet) DO UPDATE SET x_user_id = EXCLUDED.x_user_id, x_handle = EXCLUDED.x_handle`,
-      [wallet, xUserId, xHandle.replace(/^@/, "")],
+      [wallet, xUserId, handle],
     );
   },
   getX: async (wallet) => {

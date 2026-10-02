@@ -114,6 +114,11 @@ export const createMemoryAuth = (): AuthStore => {
       sessions.delete(id);
     },
     linkX: async (wallet, xUserId, xHandle) => {
+      for (const [owner, link] of links) {
+        if (owner !== wallet && (link.xUserId === xUserId || link.xHandle === xHandle.replace(/^@/, ""))) {
+          throw new Error("X account already linked");
+        }
+      }
       links.set(wallet, { xUserId, xHandle: xHandle.replace(/^@/, "") });
     },
     getX: async (wallet) => links.get(wallet) ?? null,

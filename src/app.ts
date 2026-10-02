@@ -305,7 +305,11 @@ export const buildApp = async (opts: AppOptions) => {
     if (!xUserId || !xHandle) {
       return reply.redirect(`${origin}/launch?x=failed`);
     }
-    await auth.linkX(pending.wallet, xUserId, xHandle);
+    try {
+      await auth.linkX(pending.wallet, xUserId, xHandle);
+    } catch {
+      return reply.redirect(`${origin}/launch?x=failed`);
+    }
     return reply.redirect(`${origin}/launch?x=linked`);
   });
 
@@ -337,7 +341,12 @@ export const buildApp = async (opts: AppOptions) => {
       })
       .parse(request.body);
 
-    const builder = await opts.store.upsertBuilder(wallet, link.xHandle);
+    let builder;
+    try {
+      builder = await opts.store.upsertBuilder(wallet, link.xHandle);
+    } catch {
+      throw badRequest("That X account is already linked to a launch", "HANDLE_TAKEN");
+    }
     const existing = await opts.store.listProjectsByBuilder(builder.id);
     if (existing.some((project) => project.status === "active" && project.demo !== false)) {
       throw badRequest("You already have an active launch", "ACTIVE_LAUNCH");
