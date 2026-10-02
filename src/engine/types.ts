@@ -8,8 +8,11 @@ export const MAX_PROMISES = 20;
 export const MAX_DEV_BUY_BPS = 300;
 export const DEFAULT_SUPPLY = 1_000_000_000_000_000n;
 export const VOTE_WINDOW_MS = 48 * 60 * 60 * 1000;
+export const EXTEND_MS = 24 * 60 * 60 * 1000;
 export const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+export const MIN_DEADLINE_MS = 3 * 24 * 60 * 60 * 1000;
 export const MAX_DEADLINE_MS = 14 * 24 * 60 * 60 * 1000;
+export const SLICE_BPS = 6_000;
 
 export type ProjectStatus = "active" | "lapsed" | "abandoned";
 export type PromiseStatus =
@@ -17,6 +20,8 @@ export type PromiseStatus =
   | "vote_open"
   | "paid"
   | "burned"
+  | "rolled"
+  | "missed"
   | "no_quorum";
 export type VoteSide = "pay" | "burn";
 export type FeedKind =
@@ -25,6 +30,8 @@ export type FeedKind =
   | "vote_open"
   | "vote_pay"
   | "vote_burn"
+  | "vote_roll"
+  | "miss"
   | "no_quorum"
   | "lapse"
   | "abandon"
@@ -45,6 +52,7 @@ export type VoteState = {
   payWeight: string;
   burnWeight: string;
   locks: VoteLock[];
+  extended?: boolean;
 };
 
 export type PromiseState = {
@@ -56,6 +64,10 @@ export type PromiseState = {
   status: PromiseStatus;
   quorumFails: number;
   resultNet?: number;
+  proofUrl?: string;
+  proofNote?: string;
+  postedBalances?: Record<string, string>;
+  proofBalances?: Record<string, string>;
 };
 
 export type ProjectState = {
@@ -81,6 +93,8 @@ export type ProjectState = {
   vote: VoteState | null;
   balances: Record<string, string>;
   demo?: boolean;
+  rolloverStreak?: number;
+  excludedWallets?: string[];
 };
 
 export class EngineError extends Error {

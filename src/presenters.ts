@@ -48,6 +48,8 @@ export const presentProject = (project: ProjectState, nowMs: number) => {
       status: item.status,
       quorumFails: item.quorumFails,
       resultNet: item.resultNet ?? null,
+      proofUrl: item.proofUrl ?? "",
+      proofNote: item.proofNote ?? "",
     })),
     vote: project.vote
       ? {

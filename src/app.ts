@@ -19,6 +19,7 @@ import {
   crank,
   createProject,
   creditFees,
+  markShipped,
 } from "./engine/vault.js";
 import { getNowMs, setNowMs } from "./clock.js";
 import { HttpError, badRequest, notFound, unauthorized } from "./lib/errors.js";
@@ -81,13 +82,17 @@ const presentLive = async (
         : { upPct: 0, downPct: 0, netPct: 0 };
       return {
         ...item,
-        upPct: tally.upPct,
-        downPct: tally.downPct,
-        netPct: rows.length
-          ? holdings.ok
-            ? tally.netPct
-            : null
-          : item.resultNet ?? (holdings.ok ? tally.netPct : null),
+        upPct: item.status === "vote_open" ? null : tally.upPct,
+        downPct: item.status === "vote_open" ? null : tally.downPct,
+        turnoutPct: tally.upPct + tally.downPct,
+        netPct:
+          item.status === "vote_open"
+            ? null
+            : rows.length
+              ? holdings.ok
+                ? tally.netPct
+                : null
+              : item.resultNet ?? (holdings.ok ? tally.netPct : null),
         yourSide: rows.find((row) => row.wallet === viewer)?.side ?? null,
       };
     }),
@@ -401,6 +406,32 @@ export const buildApp = async (opts: AppOptions) => {
     return presentLive(opts.store, project, at(request), viewer ?? undefined);
   });
 
+  app.post("/v1/projects/:mint/promises/:idx/proof", async (request) => {
+    const wallet = await requireWallet(request);
+    const { mint, idx } = request.params as { mint: string; idx: string };
+    const body = z
+      .object({
+        url: z.string().min(1).max(300),
+        note: z.string().max(500).optional(),
+      })
+      .parse(request.body);
+    const project = await loadProject(opts.store, mint);
+    if (project.builderWallet !== wallet) {
+      throw badRequest("Only the builder can mark this as shipped");
+    }
+    const promise = project.promises.find((item) => item.idx === Number(idx));
+    if (!promise) {
+      throw notFound("No promise with that number");
+    }
+    const builder = await opts.store.getBuilderByWallet(wallet);
+    if (!builder) {
+      throw notFound("Builder missing");
+    }
+    const events = markShipped(project, body.url, body.note ?? "", at(request));
+    await persist(opts.store, builder.id, project, events);
+    return presentLive(opts.store, project, at(request), wallet);
+  });
+
   app.post("/v1/projects/:mint/promises/:idx/vote", async (request) => {
     const wallet = await requireWallet(request);
     const { mint, idx } = request.params as { mint: string; idx: string };
@@ -413,8 +444,11 @@ export const buildApp = async (opts: AppOptions) => {
     const promiseIdx = Number(idx);
     const project = await loadProject(opts.store, mint);
     const promise = project.promises.find((item) => item.idx === promiseIdx);
-    if (!promise || !["pending", "vote_open", "no_quorum"].includes(promise.status)) {
+    if (!promise || promise.status !== "vote_open") {
       throw badRequest("That promise is not open for votes");
+    }
+    if (wallet === project.builderWallet) {
+      throw badRequest("Builders cannot vote on their own coins");
     }
     const held = await balanceOf(project, wallet);
     if (!held.ok) {

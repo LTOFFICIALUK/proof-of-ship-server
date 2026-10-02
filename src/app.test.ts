@@ -77,7 +77,7 @@ describe("http e2e", () => {
         promises: [
           {
             text: "Public demo",
-            deadlineMs: t0 + 2 * DAY,
+            deadlineMs: t0 + 4 * DAY,
           },
         ],
       },
@@ -102,6 +102,14 @@ describe("http e2e", () => {
       payload: { mint, wallet: holder.publicKey, amount: String(quorum()) },
     });
 
+    const proof = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${mint}/promises/0/proof`,
+      headers: { cookie: session },
+      payload: { url: "https://github.com/proof", note: "done" },
+    });
+    assert.equal(proof.statusCode, 200);
+
     const vote = await app.inject({
       method: "POST",
       url: `/v1/projects/${mint}/promises/0/vote`,
@@ -109,15 +117,14 @@ describe("http e2e", () => {
       payload: { side: "up" },
     });
     assert.equal(vote.statusCode, 200);
+    assert.equal(vote.json().promises[0].netPct, null);
 
-    clock = t0 + 2 * DAY;
-    await app.inject({ method: "POST", url: "/v1/crank" });
     clock = t0 + 2 * DAY + VOTE_WINDOW_MS;
     await app.inject({ method: "POST", url: "/v1/crank" });
 
     const page = await app.inject({ method: "GET", url: `/v1/projects/${mint}` });
     assert.equal(page.json().promises[0].status, "paid");
-    assert.equal(page.json().vault.released, "750000000");
+    assert.equal(page.json().vault.released, "450000000");
 
     const passport = await app.inject({
       method: "GET",
@@ -200,6 +207,13 @@ describe("http e2e", () => {
       url: "/v1/sim/airdrop",
       payload: { mint, wallet: downVoter.publicKey, amount: String(one) },
     });
+    const proof = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${mint}/promises/0/proof`,
+      headers: { cookie: session },
+      payload: { url: "https://github.com/proof", note: "done" },
+    });
+    assert.equal(proof.statusCode, 200);
     const up = await app.inject({
       method: "POST",
       url: `/v1/projects/${mint}/promises/0/vote`,
@@ -214,7 +228,12 @@ describe("http e2e", () => {
       payload: { side: "down" },
     });
     assert.equal(down.statusCode, 200);
-    assert.equal(down.json().promises[0].netPct, 1);
+    assert.equal(down.json().promises[0].netPct, null);
+    clock += VOTE_WINDOW_MS;
+    await app.inject({ method: "POST", url: "/v1/crank" });
+    const closed = await app.inject({ method: "GET", url: `/v1/projects/${mint}` });
+    assert.equal(closed.json().promises[0].status, "paid");
+    assert.equal(closed.json().promises[0].netPct, 1);
   });
 
   it("rejects a launch with no promises", async () => {

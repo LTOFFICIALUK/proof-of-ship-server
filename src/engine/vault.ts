@@ -5,12 +5,15 @@ import {
   DEV_LOCK_STEP_BPS,
   EngineError,
   GRACE_MS,
+  EXTEND_MS,
   MAX_DEADLINE_MS,
   MAX_DEV_BUY_BPS,
   MAX_PROMISES,
+  MIN_DEADLINE_MS,
   PLATFORM_BPS,
   QUORUM_BPS,
   RUNWAY_BPS,
+  SLICE_BPS,
   VAULT_BPS,
   VOTE_WINDOW_MS,
   type FeedKind,
@@ -93,8 +96,8 @@ export const createProject = (input: {
   if (input.promises.length < 1) {
     throw new EngineError("NO_PROMISE", "Launch needs at least one promise");
   }
-  if (input.promises.length > MAX_PROMISES) {
-    throw new EngineError("TOO_MANY", "At most 20 promises can be queued");
+  if (input.promises.length > 1) {
+    throw new EngineError("ONE_PROMISE", "Launch with one promise");
   }
 
   const supply = input.circulatingSupply ?? DEFAULT_SUPPLY;
@@ -111,8 +114,8 @@ export const createProject = (input: {
     if (!text) {
       throw new EngineError("EMPTY_PROMISE", "A promise cannot be empty");
     }
-    if (raw.deadlineMs <= input.nowMs) {
-      throw new EngineError("DEADLINE", "Deadline must be in the future");
+    if (raw.deadlineMs < input.nowMs + MIN_DEADLINE_MS) {
+      throw new EngineError("DEADLINE", "Deadline must be at least 3 days out");
     }
     if (raw.deadlineMs > input.nowMs + MAX_DEADLINE_MS) {
       throw new EngineError(
@@ -163,7 +166,12 @@ export const createProject = (input: {
     vote: null,
     balances: {},
     demo: true,
+    rolloverStreak: 0,
+    excludedWallets: [input.builderWallet],
   };
+  promises.forEach((item) => {
+    item.postedBalances = {};
+  });
 
   if (devLock > 0n) {
     setBalance(project, input.builderWallet, 0n);
@@ -253,8 +261,11 @@ export const appendPromise = (
   if (!trimmed) {
     throw new EngineError("EMPTY_PROMISE", "A promise cannot be empty");
   }
-  if (deadlineMs <= nowMs) {
-    throw new EngineError("DEADLINE", "Deadline must be in the future");
+  if (deadlineMs < nowMs + MIN_DEADLINE_MS) {
+    throw new EngineError("DEADLINE", "Deadline must be at least 3 days out");
+  }
+  if (project.promises.some((item) => item.status === "pending" || item.status === "vote_open")) {
+    throw new EngineError("OPEN_PROMISE", "Finish the open promise before posting the next one");
   }
   if (deadlineMs > nowMs + MAX_DEADLINE_MS) {
     throw new EngineError(
@@ -279,6 +290,7 @@ export const appendPromise = (
     postedAtMs: nowMs,
     status: "pending",
     quorumFails: 0,
+    postedBalances: { ...project.balances },
   });
 
   if (project.status === "lapsed") {
@@ -298,44 +310,78 @@ export const appendPromise = (
   ];
 };
 
-export const openVote = (
+const sliceOf = (balance: bigint) => (balance * BigInt(SLICE_BPS)) / BigInt(BPS_DENOM);
+
+export const markShipped = (
   project: ProjectState,
+  url: string,
+  note: string,
   nowMs: number,
 ): EngineEvent[] => {
-  if (project.status !== "active") {
-    return [];
-  }
   if (project.vote) {
-    return [];
+    throw new EngineError("VOTE", "A vote is already open");
   }
-  const next = project.promises.find(
-    (item) =>
-      (item.status === "pending" || item.status === "no_quorum") &&
-      nowMs >= item.deadlineMs,
-  );
-  if (!next) {
-    return [];
+  const promise = project.promises.find((item) => item.status === "pending");
+  if (!promise) {
+    throw new EngineError("PROMISE", "There is no open promise to ship");
   }
-
-  next.status = "vote_open";
+  if (nowMs >= promise.deadlineMs) {
+    throw new EngineError("DEADLINE", "The deadline has passed");
+  }
+  const proofUrl = url.trim();
+  if (!proofUrl) {
+    throw new EngineError("PROOF", "Add a proof link");
+  }
+  promise.proofUrl = proofUrl;
+  promise.proofNote = note.trim();
+  promise.proofBalances = { ...project.balances };
+  promise.status = "vote_open";
   project.vote = {
-    promiseIdx: next.idx,
+    promiseIdx: promise.idx,
     startMs: nowMs,
     endMs: nowMs + VOTE_WINDOW_MS,
     payWeight: "0",
     burnWeight: "0",
     locks: [],
   };
-
   return [
     {
       kind: "vote_open",
       atMs: nowMs,
       mint: project.mint,
-      detail: { idx: next.idx },
+      detail: { idx: promise.idx, proof: proofUrl },
     },
   ];
 };
+
+export const missDue = (project: ProjectState, nowMs: number): EngineEvent[] => {
+  if (project.status !== "active" || project.vote) {
+    return [];
+  }
+  const promise = project.promises.find(
+    (item) => item.status === "pending" && nowMs >= item.deadlineMs,
+  );
+  if (!promise) {
+    return [];
+  }
+  promise.status = "missed";
+  const amount = sliceOf(n(project.balance));
+  project.burnBucket = s(n(project.burnBucket) + amount);
+  project.balance = s(n(project.balance) - amount);
+  project.rolloverStreak = 0;
+  afterVote(project, promise.idx, nowMs);
+  assertInvariant(project);
+  return [
+    {
+      kind: "miss",
+      atMs: nowMs,
+      mint: project.mint,
+      detail: { idx: promise.idx, amount: s(amount) },
+    },
+  ];
+};
+
+export const openVote = (project: ProjectState, nowMs: number): EngineEvent[] => missDue(project, nowMs);
 
 export const castVote = (
   project: ProjectState,
@@ -345,6 +391,9 @@ export const castVote = (
 ) => {
   if (!project.vote) {
     throw new EngineError("NO_VOTE", "No vote is open");
+  }
+  if (wallet === project.builderWallet || project.excludedWallets?.includes(wallet)) {
+    throw new EngineError("VOTE", "Builders cannot vote on their own coins");
   }
   if (amount <= 0n) {
     throw new EngineError("VOTE", "Vote amount must be greater than zero");
@@ -381,18 +430,30 @@ const unlockVotes = (project: ProjectState) => {
 };
 
 const settleBurn = (project: ProjectState) => {
-  const amount = n(project.balance);
+  const amount = sliceOf(n(project.balance));
   project.burnBucket = s(n(project.burnBucket) + amount);
-  project.balance = "0";
+  project.balance = s(n(project.balance) - amount);
+  project.rolloverStreak = 0;
   stepDevLock(project, true);
 };
 
 const settlePay = (project: ProjectState) => {
-  const amount = n(project.balance);
+  const amount = sliceOf(n(project.balance));
   project.released = s(n(project.released) + amount);
   project.builderReceived = s(n(project.builderReceived) + amount);
-  project.balance = "0";
+  project.balance = s(n(project.balance) - amount);
+  project.rolloverStreak = 0;
   stepDevLock(project, false);
+};
+
+const settleRollover = (project: ProjectState) => {
+  project.rolloverStreak = (project.rolloverStreak ?? 0) + 1;
+  if ((project.rolloverStreak ?? 0) < 2) {
+    return;
+  }
+  project.burnBucket = s(n(project.burnBucket) + n(project.balance));
+  project.balance = "0";
+  project.rolloverStreak = 0;
 };
 
 const afterVote = (project: ProjectState, promiseIdx: number, nowMs: number) => {
@@ -425,13 +486,20 @@ export const finalizeVote = (
   const quorum =
     (n(project.circulatingSupply) * BigInt(QUORUM_BPS)) / BigInt(BPS_DENOM);
 
-  unlockVotes(project);
+  const pay = n(vote.payWeight);
+  const burn = n(vote.burnWeight);
+  const supply = n(project.circulatingSupply);
+  if (supply > 0n) {
+    const payPct = Number((pay * 10000n) / supply) / 100;
+    const burnPct = Number((burn * 10000n) / supply) / 100;
+    promise.resultNet = payPct - burnPct;
+  }
 
   if (locked < quorum) {
     promise.quorumFails += 1;
-    if (promise.quorumFails < 2) {
-      promise.status = "no_quorum";
-      project.vote = null;
+    if (!vote.extended) {
+      vote.extended = true;
+      vote.endMs += EXTEND_MS;
       return [
         {
           kind: "no_quorum",
@@ -441,13 +509,14 @@ export const finalizeVote = (
         },
       ];
     }
-    promise.status = "burned";
-    settleBurn(project);
+    unlockVotes(project);
+    promise.status = "rolled";
+    settleRollover(project);
     afterVote(project, promise.idx, nowMs);
     assertInvariant(project);
     return [
       {
-        kind: "vote_burn",
+        kind: "vote_roll",
         atMs: nowMs,
         mint: project.mint,
         detail: { idx: promise.idx, reason: "no_quorum" },
@@ -455,34 +524,33 @@ export const finalizeVote = (
     ];
   }
 
-  const pay = n(vote.payWeight);
-  const burn = n(vote.burnWeight);
-  const supply = n(project.circulatingSupply);
-  if (supply > 0n) {
-    const payPct = Number((pay * 10000n) / supply) / 100;
-    const burnPct = Number((burn * 10000n) / supply) / 100;
-    promise.resultNet = payPct - burnPct;
-  }
-  const isPay = pay > burn;
-  if (isPay) {
+  unlockVotes(project);
+  const tie = pay === burn;
+  if (tie || pay < burn) {
+    if (tie) {
+      promise.status = "rolled";
+      settleRollover(project);
+    } else {
+      promise.status = "burned";
+      settleBurn(project);
+    }
+  } else {
     promise.status = "paid";
     settlePay(project);
-  } else {
-    promise.status = "burned";
-    settleBurn(project);
   }
   afterVote(project, promise.idx, nowMs);
   assertInvariant(project);
+  const kind = promise.status === "paid" ? "vote_pay" : promise.status === "burned" ? "vote_burn" : "vote_roll";
   return [
     {
-      kind: isPay ? "vote_pay" : "vote_burn",
+      kind,
       atMs: nowMs,
       mint: project.mint,
       detail: {
         idx: promise.idx,
         pay: s(pay),
         burn: s(burn),
-        tie: pay === burn,
+        tie,
       },
     },
   ];
