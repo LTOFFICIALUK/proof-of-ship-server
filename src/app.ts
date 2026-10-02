@@ -303,7 +303,7 @@ export const buildApp = async (opts: AppOptions) => {
   app.post("/v1/auth/verify", async (request, reply) => {
     const body = z
       .object({
-        message: z.string().min(1).max(500),
+        message: z.string().min(1).max(2000),
         signature: z.string().min(1),
       })
       .parse(request.body);

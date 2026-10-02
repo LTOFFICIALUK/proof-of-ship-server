@@ -2,8 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 
-const PREFIX = "proofofship.fun wants you to sign in with your Solana account:";
 const WALLET = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const SIWS_HEADER = / wants you to sign in with your Solana account:$/;
 
 export type XLink = {
   xUserId: string;
@@ -28,17 +28,32 @@ export type AuthStore = {
   takeOauth: (state: string, now: number) => Promise<OauthPending | null>;
 };
 
-export const signInMessage = (wallet: string, nonce: string, issued: string) =>
-  `${PREFIX}\n${wallet}\n\nNonce: ${nonce}\nIssued: ${issued}`;
+export const signInMessage = (
+  wallet: string,
+  nonce: string,
+  issued: string,
+  domain = "proofofship.fun",
+  uri = "https://proofofship.fun",
+) =>
+  `${domain} wants you to sign in with your Solana account:\n${wallet}\n\nSign in to Proof of Ship.\n\nURI: ${uri}\nVersion: 1\nChain ID: mainnet\nNonce: ${nonce}\nIssued At: ${issued}`;
+
+export const simpleSignInMessage = (wallet: string, nonce: string, issued: string) =>
+  `Proof of Ship\n${wallet}\n\nNonce: ${nonce}\nIssued: ${issued}`;
 
 export const parseSignIn = (message: string) => {
-  const lines = message.split("\n");
-  if (lines[0] !== PREFIX) {
+  const lines = message.split(/\r?\n/);
+  const header = lines[0] ?? "";
+  const siws = SIWS_HEADER.test(header);
+  const simple = header === "Proof of Ship";
+  if (!siws && !simple) {
     return null;
   }
-  const wallet = lines[1] ?? "";
-  const nonce = lines.find((line) => line.startsWith("Nonce: "))?.slice("Nonce: ".length) ?? "";
-  const issued = lines.find((line) => line.startsWith("Issued: "))?.slice("Issued: ".length) ?? "";
+  const wallet = (lines[1] ?? "").trim();
+  const nonce = lines.find((line) => line.startsWith("Nonce: "))?.slice("Nonce: ".length).trim() ?? "";
+  const issued =
+    lines.find((line) => line.startsWith("Issued At: "))?.slice("Issued At: ".length).trim() ??
+    lines.find((line) => line.startsWith("Issued: "))?.slice("Issued: ".length).trim() ??
+    "";
   if (!WALLET.test(wallet) || !nonce || !issued) {
     return null;
   }
