@@ -8,7 +8,7 @@ There is no custom Solana program. The server holds three wallets and a mint ban
 
 | Wallet | After we split | Job |
 |---|---|---|
-| Vault | Keeps 75% | pump.fun pays 100% of creator fees here. We send runway and platform out. We pay the builder on a pay vote. We buy $POS on a burn vote. We buy and burn the project coin on a miss, lapse, or abandon. |
+| Vault | Keeps 75% | pump.fun pays 100% of creator fees here. We send runway and platform out. We pay the builder on a pay vote. We buy and burn $POS on a burn vote, a miss, a lapse, or an abandon. |
 | Builder | Gets 15% from us | Runway. We send this from the vault as fees land. Pay votes also send vault SOL here. |
 | Platform | Gets 10% from us | Platform treasury. We send this from the vault as fees land. |
 | Crank | Pending | Pays transaction fees when needed. |
@@ -31,7 +31,7 @@ The ledger moves first. The crank then sends from the vault wallet.
 
 1. Fees land in the vault. We send 15% to the builder and 10% to the platform. 75% stays.
 2. Pay: 60% of the remaining vault is paid to the builder in SOL.
-3. Burn vote: 60% buys $POS.
-4. Miss, lapse, abandon: that slice buys the project coin and burns it.
+3. Burn vote: 60% buys $POS (`H49xNgg1hMV6LqXK6if2g8CYnrvp7CxQ5SJTnDRwPoS`) and burns it.
+4. Miss: that same slice buys $POS and burns it. Lapse and abandon buy and burn $POS with the remaining vault. None of these buy the project coin.
 
 If a send or swap fails, the bucket stays queued and the next crank retries.

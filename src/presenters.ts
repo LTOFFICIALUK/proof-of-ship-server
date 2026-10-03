@@ -283,7 +283,7 @@ export const presentProfile = (
         mint: project.mint,
         name: project.name,
         symbol: project.symbol,
-        text: "This coin lapsed. Fees are burning.",
+        text: "This coin lapsed. Fees buy and burn $POS.",
         dueMs: null,
       });
     }
@@ -293,7 +293,7 @@ export const presentProfile = (
         mint: project.mint,
         name: project.name,
         symbol: project.symbol,
-        text: "This coin is abandoned. The vault burns.",
+        text: "This coin is abandoned. The vault buys and burns $POS.",
         dueMs: null,
       });
     }
