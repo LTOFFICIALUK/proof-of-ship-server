@@ -42,7 +42,7 @@ export type ShipStore = {
   listProjectsByBuilder: (builderId: string) => Promise<ProjectState[]>;
   saveProject: (builderId: string, project: ProjectState) => Promise<void>;
   appendEvents: (events: EngineEvent[]) => Promise<void>;
-  listFeed: (limit: number) => Promise<FeedRow[]>;
+  listFeed: (limit: number, kinds?: string[]) => Promise<FeedRow[]>;
   listProjects: () => Promise<ProjectState[]>;
   listMessages: (mint: string, limit: number) => Promise<ChatRow[]>;
   addMessage: (mint: string, wallet: string, text: string, atMs: number) => Promise<ChatRow>;
@@ -116,7 +116,10 @@ export const createMemoryStore = (): ShipStore => {
         feedId += 1;
       }
     },
-    listFeed: async (limit) => feed.slice(0, limit),
+    listFeed: async (limit, kinds) => {
+      const rows = kinds?.length ? feed.filter((row) => kinds.includes(row.kind)) : feed;
+      return rows.slice(0, limit);
+    },
     listProjects: async () => [...projects.values()].map((row) => row.project),
     listMessages: async (mint, limit) =>
       messages.filter((row) => row.mint === mint).slice(-limit),

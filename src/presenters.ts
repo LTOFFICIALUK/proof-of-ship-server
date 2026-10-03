@@ -432,6 +432,141 @@ export const feedMatches = (kind: string, filter: string | undefined) => {
   return group ? group.includes(kind) : true;
 };
 
+export const BURN_LEDGER_KINDS = [
+  "vote_burn",
+  "miss",
+  "vote_roll",
+  "lapse",
+  "abandon",
+  "promise",
+  "burn",
+  "pos",
+];
+
+const detailText = (value: unknown) => (typeof value === "string" && value ? value : null);
+
+const promiseText = (project: ProjectState, detail: FeedRow["detail"]) => {
+  const idx = typeof detail.idx === "number" ? detail.idx : null;
+  if (idx === null) {
+    return "";
+  }
+  return project.promises.find((item) => item.idx === idx)?.text ?? "";
+};
+
+const causeReason = (kind: string, promise: string) => {
+  const tail = promise ? `. Promise: ${promise}.` : ".";
+  if (kind === "vote_burn") {
+    return `Holders voted not to pay${tail}`;
+  }
+  if (kind === "miss") {
+    return `Missed the deadline${tail}`;
+  }
+  if (kind === "vote_roll") {
+    return `Vote rolled over twice${tail}`;
+  }
+  if (kind === "lapse") {
+    return "No new promise in 7 days.";
+  }
+  if (kind === "abandon") {
+    return "Builder abandoned the coin.";
+  }
+  return "";
+};
+
+const queuedAmount = (detail: FeedRow["detail"]) => {
+  const raw = detail.amount;
+  return typeof raw === "string" && /^[0-9]+$/.test(raw) ? BigInt(raw) : 0n;
+};
+
+export type BurnLedgerRow = {
+  id: string;
+  mint: string;
+  name: string;
+  symbol: string;
+  amountSol: number;
+  tokenMint: string;
+  tokenSymbol: string;
+  tokens: string | null;
+  buySig: string | null;
+  burnSig: string | null;
+  reason: string;
+  atMs: number;
+};
+
+export const presentBurns = (rows: FeedRow[], projects: Map<string, ProjectState>): BurnLedgerRow[] => {
+  const byMint = new Map<string, FeedRow[]>();
+  for (const row of rows) {
+    if (!projects.has(row.mint)) {
+      continue;
+    }
+    const list = byMint.get(row.mint) ?? [];
+    list.push(row);
+    byMint.set(row.mint, list);
+  }
+
+  const burns: BurnLedgerRow[] = [];
+  for (const [mint, list] of byMint) {
+    const project = projects.get(mint);
+    if (!project) {
+      continue;
+    }
+    const ordered = [...list].sort((a, b) => Number(a.id) - Number(b.id));
+    const posOnce: string[] = [];
+    const burnOnce: string[] = [];
+    let posSticky = "";
+    let burnSticky = "";
+    for (const row of ordered) {
+      const promise = promiseText(project, row.detail);
+      if (row.kind === "vote_burn") {
+        posOnce.push(causeReason(row.kind, promise));
+      } else if (row.kind === "miss" || (row.kind === "vote_roll" && queuedAmount(row.detail) > 0n)) {
+        burnOnce.push(causeReason(row.kind, promise));
+      } else if (row.kind === "lapse") {
+        burnSticky = causeReason(row.kind, promise);
+      } else if (row.kind === "promise") {
+        burnSticky = "";
+      } else if (row.kind === "abandon") {
+        posOnce.push(...burnOnce.splice(0));
+        posSticky = causeReason(row.kind, promise);
+        burnSticky = "";
+      }
+
+      if (row.kind !== "burn" && row.kind !== "pos") {
+        continue;
+      }
+
+      const raw = row.detail.amount;
+      const amountSol = typeof raw === "string" && /^[0-9]+$/.test(raw) ? lamportsToSol(raw) : null;
+      const stored = detailText(row.detail.reason);
+      const once = row.kind === "pos" ? posOnce.splice(0) : burnOnce.splice(0);
+      const sticky = row.kind === "pos" ? posSticky : burnSticky;
+      const reason = stored || [...once, sticky].filter(Boolean).join(" ") || "Buy and burn.";
+      const tokenMint =
+        detailText(row.detail.token) ?? (row.kind === "pos" ? POS_MINT : project.mint);
+      const tokens = detailText(row.detail.tokens) ?? detailText(row.detail.pos);
+      if (amountSol === null && !detailText(row.detail.buySig) && !detailText(row.detail.sig)) {
+        continue;
+      }
+      burns.push({
+        id: row.id,
+        mint,
+        name: project.name,
+        symbol: project.symbol,
+        amountSol: amountSol ?? 0,
+        tokenMint,
+        tokenSymbol: tokenMint === POS_MINT ? "POS" : project.symbol,
+        tokens,
+        buySig: detailText(row.detail.buySig) ?? detailText(row.detail.sig),
+        burnSig: detailText(row.detail.burnSig),
+        reason,
+        atMs: row.atMs,
+      });
+    }
+  }
+
+  return burns.sort((a, b) => b.atMs - a.atMs || Number(b.id) - Number(a.id));
+};
+
 export const presentFeed = (rows: FeedRow[], projects: Map<string, ProjectState>) =>
   rows.map((row) => {
     const project = projects.get(row.mint);

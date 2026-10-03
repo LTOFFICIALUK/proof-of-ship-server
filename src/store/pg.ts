@@ -96,10 +96,14 @@ export const createPgStore = (): ShipStore => ({
       );
     }
   },
-  listFeed: async (limit) => {
+  listFeed: async (limit, kinds) => {
     const result = await query<EventDb>(
-      "SELECT id::text, mint, kind, detail, at_ms FROM feed_events ORDER BY id DESC LIMIT $1",
-      [limit],
+      `SELECT id::text, mint, kind, detail, at_ms
+       FROM feed_events
+       WHERE ($2::text[] IS NULL OR kind = ANY($2::text[]))
+       ORDER BY id DESC
+       LIMIT $1`,
+      [limit, kinds?.length ? kinds : null],
     );
     return result.rows.map((row): FeedRow => ({
       id: row.id,

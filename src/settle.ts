@@ -3,6 +3,7 @@ import { crank, executeBuybackBurn, executePosBuy, finalizeVote, lapse } from ".
 import type { ProjectState } from "./engine/types.js";
 import type { EngineEvent } from "./engine/vault.js";
 import { logger } from "./logger.js";
+import { POS_MINT } from "./pos.js";
 import { destinations, treasury } from "./wallets.js";
 import type { ShipStore } from "./store/memory.js";
 import { weighVotes } from "./weights.js";
@@ -56,7 +57,19 @@ export const payCuts = async (project: ProjectState, at: number): Promise<Engine
   return events;
 };
 
-export const flushChain = async (project: ProjectState, at: number): Promise<EngineEvent[]> => {
+const stamp = (detail: EngineEvent["detail"], fields: Record<string, string>) => {
+  for (const [key, value] of Object.entries(fields)) {
+    if (value) {
+      detail[key] = value;
+    }
+  }
+};
+
+export const flushChain = async (
+  project: ProjectState,
+  at: number,
+  prior: EngineEvent[] = [],
+): Promise<EngineEvent[]> => {
   const events: EngineEvent[] = [];
   if (project.demo !== false || !treasury().vaultSigner) {
     return events;
@@ -86,20 +99,27 @@ export const flushChain = async (project: ProjectState, at: number): Promise<Eng
   if (posQueued > 0n) {
     try {
       const bought = await buyPos(posQueued);
-      if (project.status === "abandoned") {
-        try {
-          await burnPos(bought.out);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          chain.posUnburned = (n(chain.posUnburned) + bought.out).toString();
-          logger.warn("pos burn waiting", { mint: project.mint, message });
-        }
+      let burnSig = "";
+      try {
+        burnSig = await burnPos(bought.out);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        chain.posUnburned = (n(chain.posUnburned) + bought.out).toString();
+        logger.warn("pos burn waiting", { mint: project.mint, message });
       }
-      events.push(...executePosBuy(project, at, bought.out));
+      const created = executePosBuy(project, at, bought.out);
+      const target = created[created.length - 1];
+      if (target) {
+        stamp(target.detail, {
+          sig: bought.sig,
+          buySig: bought.sig,
+          burnSig,
+          token: POS_MINT,
+          tokens: bought.out.toString(),
+        });
+        events.push(...created);
+      }
       chain.posSpent = (n(chain.posSpent) + posQueued).toString();
-      if (bought.sig) {
-        events[events.length - 1]!.detail.sig = bought.sig;
-      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("pos buy waiting", { mint: project.mint, message });
@@ -107,10 +127,14 @@ export const flushChain = async (project: ProjectState, at: number): Promise<Eng
   }
 
   const unburned = n(chain.posUnburned);
-  if (project.status === "abandoned" && unburned > 0n) {
+  if (unburned > 0n) {
     try {
-      await burnPos(unburned);
+      const sig = await burnPos(unburned);
       chain.posUnburned = "0";
+      const open = [...prior, ...events].reverse().find((event) => event.kind === "pos" && !event.detail.burnSig);
+      if (open && sig) {
+        open.detail.burnSig = sig;
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("pos burn waiting", { mint: project.mint, message });
@@ -121,11 +145,29 @@ export const flushChain = async (project: ProjectState, at: number): Promise<Eng
   if (owedBurn > 0n) {
     try {
       const bought = await buybackBurn(project.mint, owedBurn);
-      events.push(...executeBuybackBurn(project, at));
-      chain.burnSpent = (n(chain.burnSpent) + owedBurn).toString();
-      if (bought.sig) {
-        events[events.length - 1]!.detail.sig = bought.sig;
+      const created = executeBuybackBurn(project, at);
+      const open = [...prior, ...created].filter((event) => event.kind === "burn" && !event.detail.buySig);
+      const fields = {
+        sig: bought.sig,
+        buySig: bought.sig,
+        burnSig: "burnSig" in bought ? bought.burnSig : "",
+        token: project.mint,
+        tokens: bought.out.toString(),
+      };
+      if (open.length) {
+        for (const event of open) {
+          stamp(event.detail, fields);
+        }
+        events.push(...created);
+      } else {
+        events.push({
+          kind: "burn",
+          atMs: at,
+          mint: project.mint,
+          detail: { amount: owedBurn.toString(), ...fields },
+        });
       }
+      chain.burnSpent = (n(chain.burnSpent) + owedBurn).toString();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("burn send waiting", { mint: project.mint, message });
@@ -146,13 +188,13 @@ export const advanceProject = async (
   const vote = project.vote;
   if (!vote || at < vote.endMs) {
     const events = crank(project, at);
-    events.push(...(await flushChain(project, at)));
+    events.push(...(await flushChain(project, at, events)));
     return events;
   }
   const promise = project.promises.find((item) => item.idx === vote.promiseIdx);
   if (!promise) {
     const events = crank(project, at);
-    events.push(...(await flushChain(project, at)));
+    events.push(...(await flushChain(project, at, events)));
     return events;
   }
   const votes = (await store.listHolderVotes(project.mint)).filter(
@@ -179,6 +221,6 @@ export const advanceProject = async (
   }
   events.push(...lapse(project, at));
   events.push(...executeBuybackBurn(project, at));
-  events.push(...(await flushChain(project, at)));
+  events.push(...(await flushChain(project, at, events)));
   return events;
 };

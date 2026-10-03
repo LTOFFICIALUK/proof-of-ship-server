@@ -30,11 +30,13 @@ import {
   builderRecord,
   coinSlug,
   currentPromise,
+  BURN_LEDGER_KINDS,
   feedMatches,
   filterCoins,
   lastClosed,
   presentBuilder,
   presentCard,
+  presentBurns,
   presentFeed,
   presentProfile,
   presentProject,
@@ -1074,6 +1076,16 @@ export const buildApp = async (opts: AppOptions) => {
       .type("image/svg+xml")
       .header("cache-control", "public, max-age=300")
       .send(badgeSvg(`@${builder.xHandle}`, right));
+  });
+
+  app.get("/v1/burns", async (request) => {
+    const query = z.object({ scope: z.string().optional() }).parse(request.query);
+    const projects = scoped(await opts.store.listProjects(), query.scope);
+    const byMint = new Map(projects.map((project) => [project.mint, project]));
+    const rows = (await opts.store.listFeed(500, BURN_LEDGER_KINDS)).filter(
+      (row) => byMint.has(row.mint) && row.atMs <= at(request),
+    );
+    return { burns: presentBurns(rows, byMint) };
   });
 
   app.get("/v1/feed", async (request) => {
