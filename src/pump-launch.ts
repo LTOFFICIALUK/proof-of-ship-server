@@ -175,10 +175,17 @@ const sendSigned = async (encoded: string, user: PublicKey, mint: PublicKey) => 
     signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
-    if (/blockhash not found|expired/i.test(message)) {
+    if (/already been processed|already processed/i.test(message)) {
+      const existing = tx.signatures[0]?.signature;
+      if (!existing) {
+        throw new Error("The launch transaction was already sent.");
+      }
+      signature = bs58.encode(existing);
+    } else if (/blockhash not found|expired/i.test(message)) {
       throw new Error("That confirmation expired. Start the launch again.");
+    } else {
+      throw new Error(message || "The launch transaction was rejected.");
     }
-    throw new Error(message || "The launch transaction was rejected.");
   }
   const confirmed = await connection.confirmTransaction(signature, "confirmed");
   if (confirmed.value.err) {
@@ -209,6 +216,9 @@ export const assertFeeLock = async (mintAddress: string) => {
     throw new Error("Fees were not locked to the vault. The coin was not listed.");
   }
 };
+
+export const relayLaunchTransaction = async (encoded: string, mint: MintKey, userWallet: string) =>
+  sendSigned(encoded, new PublicKey(userWallet), new PublicKey(mint.publicKey));
 
 export const broadcastLaunch = async (encoded: string[], mint: MintKey, userWallet: string) => {
   if (encoded.length < 2) {

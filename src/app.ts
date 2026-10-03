@@ -42,7 +42,7 @@ import {
   type CoinFilter,
 } from "./presenters.js";
 import { claimMint, depositMint, markMintUsed, MintBankEmptyError, readyCount, releaseMint, reserveMint, reservedFor } from "./mint-bank.js";
-import { broadcastBuy, broadcastLaunch, buildDevBuy, buildLaunchTransactions } from "./pump-launch.js";
+import { broadcastBuy, broadcastLaunch, buildDevBuy, buildLaunchTransactions, relayLaunchTransaction } from "./pump-launch.js";
 import { logger } from "./logger.js";
 import { advanceProject } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
@@ -594,6 +594,21 @@ export const buildApp = async (opts: AppOptions) => {
       return { mode: "live", mint: reserved.publicKey, transactions };
     } catch (error) {
       await releaseMint(reserved.publicKey).catch(() => undefined);
+      throw badRequest(launchMessage(error));
+    }
+  });
+
+  app.post("/v1/launch/relay", async (request) => {
+    const wallet = await requireWallet(request);
+    const body = z.object({ transaction: z.string().min(1) }).parse(request.body);
+    const reserved = await reservedFor(wallet);
+    if (!reserved) {
+      throw badRequest("That launch expired. Start again.");
+    }
+    try {
+      const signature = await relayLaunchTransaction(body.transaction, reserved, wallet);
+      return { ok: true, signature };
+    } catch (error) {
       throw badRequest(launchMessage(error));
     }
   });
