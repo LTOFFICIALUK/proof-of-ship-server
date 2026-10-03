@@ -900,7 +900,7 @@ export const buildApp = async (opts: AppOptions) => {
         promiseIdx: promise.idx,
         wallet,
         side: body.side === "burn" ? "down" : "up",
-        reason: body.side === "burn" ? body.reason ?? "" : "",
+        reason: body.reason ?? "",
         message,
         signature: body.signature,
       });
