@@ -202,11 +202,26 @@ export const creditFees = (
   creatorLamports: bigint,
   nowMs: number,
 ): EngineEvent[] => {
-  if (project.status === "abandoned") {
-    throw new EngineError("ABANDONED", "This project was abandoned");
-  }
   if (creatorLamports <= 0n) {
     throw new EngineError("FEES", "Fee amount must be greater than zero");
+  }
+  if (project.status === "abandoned") {
+    project.accounted = s(n(project.accounted) + creatorLamports);
+    project.posBucket = s(n(project.posBucket) + creatorLamports);
+    assertInvariant(project);
+    return [
+      {
+        kind: "inflow",
+        atMs: nowMs,
+        mint: project.mint,
+        detail: {
+          vault: s(creatorLamports),
+          runway: "0",
+          platform: "0",
+          abandoned: true,
+        },
+      },
+    ];
   }
 
   const vaultShare =
@@ -674,7 +689,8 @@ export const abandon = (project: ProjectState, nowMs: number): EngineEvent[] => 
   project.vote = null;
   project.status = "abandoned";
   project.nextDueAtMs = null;
-  project.burnBucket = s(n(project.burnBucket) + n(project.balance));
+  project.posBucket = s(n(project.posBucket) + n(project.balance) + n(project.burnBucket));
+  project.burnBucket = "0";
   project.balance = "0";
   project.devLock = "0";
   assertInvariant(project);

@@ -257,14 +257,24 @@ describe("lapse", () => {
 });
 
 describe("abandon", () => {
-  it("burns remaining vault and lock", () => {
+  it("queues the vault and later creator fees to buy and burn POS", () => {
     const project = launch();
     creditFees(project, 10_000n, t0);
+    const runway = project.runwayPaid;
     abandon(project, t0);
-    executeBuybackBurn(project, t0);
     assert.equal(project.status, "abandoned");
-    assert.equal(project.burned, "7500");
+    assert.equal(project.posBucket, "7500");
+    assert.equal(project.burnBucket, "0");
+    assert.equal(project.balance, "0");
     assert.equal(project.devLock, "0");
+    executePosBuy(project, t0, 1n);
+    assert.equal(project.burned, "7500");
+    assert.equal(project.posBucket, "0");
+    creditFees(project, 4_000n, t0 + 1_000);
+    assert.equal(project.posBucket, "4000");
+    assert.equal(project.accounted, "11500");
+    assert.equal(project.runwayPaid, runway);
+    assert.equal(invariantHolds(project), true);
   });
 });
 

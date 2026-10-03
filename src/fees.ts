@@ -1,13 +1,65 @@
+import { createRequire } from "node:module";
+import { Connection, Keypair, PublicKey, TransactionMessage, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
 import { creditVaultInflow } from "./engine/vault.js";
 import type { ProjectState } from "./engine/types.js";
+import { rpcUrl } from "./chain.js";
 import { logger } from "./logger.js";
 import { payCuts } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
 import { treasury } from "./wallets.js";
 
-const rpcUrl = () => {
-  const key = process.env.HELIUS_API_KEY;
-  return key ? `https://mainnet.helius-rpc.com/?api-key=${key}` : "";
+const require = createRequire(import.meta.url);
+const pump = require("@pump-fun/pump-sdk") as {
+  OnlinePumpSdk: new (connection: Connection) => {
+    getMinimumDistributableFee: (mint: PublicKey) => Promise<{ canDistribute: boolean }>;
+    buildDistributeCreatorFeesInstructions: (mint: PublicKey) => Promise<{ instructions: TransactionInstruction[] }>;
+  };
+};
+
+export const claimAbandonedFees = async (projects: ProjectState[]) => {
+  const { vaultSigner } = treasury();
+  const url = rpcUrl();
+  if (!vaultSigner || !url) {
+    return 0;
+  }
+  const abandoned = projects.filter((project) => project.status === "abandoned" && project.demo === false);
+  if (!abandoned.length) {
+    return 0;
+  }
+  const connection = new Connection(url, "confirmed");
+  const online = new pump.OnlinePumpSdk(connection);
+  const payer = Keypair.fromSecretKey(vaultSigner.secretKey);
+  let claimed = 0;
+  for (const project of abandoned) {
+    try {
+      const mint = new PublicKey(project.mint);
+      const minimum = await online.getMinimumDistributableFee(mint);
+      if (!minimum.canDistribute) {
+        continue;
+      }
+      const built = await online.buildDistributeCreatorFeesInstructions(mint);
+      if (!built.instructions.length) {
+        continue;
+      }
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      const tx = new VersionedTransaction(
+        new TransactionMessage({
+          payerKey: payer.publicKey,
+          recentBlockhash: blockhash,
+          instructions: built.instructions,
+        }).compileToV0Message(),
+      );
+      tx.sign([payer]);
+      const signature = await connection.sendTransaction(tx);
+      await connection.confirmTransaction(signature, "confirmed");
+      claimed += 1;
+      logger.info("claimed abandoned creator fees", { mint: project.mint, signature });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("abandoned fee claim waiting", { mint: project.mint, message });
+    }
+  }
+  return claimed;
 };
 
 const rpc = async (method: string, params: unknown[]) => {

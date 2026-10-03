@@ -135,6 +135,7 @@ export type ProjectState = {
     runwaySent?: string;
     platformSent?: string;
     lastInflowSig?: string;
+    posUnburned?: string;
   } | null;
 };
 

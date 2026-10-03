@@ -1,20 +1,22 @@
 import { nowMs } from "../clock.js";
-import { ingestVaultInflows } from "../fees.js";
+import { claimAbandonedFees, ingestVaultInflows } from "../fees.js";
 import { logger } from "../logger.js";
 import { refillMintBank } from "../mint-bank.js";
 import { advanceProject } from "../settle.js";
 import type { ShipStore } from "../store/memory.js";
 
 export const runCrank = async (store: ShipStore) => {
-  const projects = await store.listProjects();
+  const listed = await store.listProjects();
   const at = nowMs();
   try {
+    await claimAbandonedFees(listed);
     await ingestVaultInflows(store, at);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("fee ingest failed", { message });
   }
   void refillMintBank();
+  const projects = await store.listProjects();
   let events = 0;
   for (const project of projects) {
     const builder = await store.getBuilderByWallet(project.builderWallet);

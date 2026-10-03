@@ -1,4 +1,4 @@
-import { buyPos, buybackBurn, sendSolFromVault } from "./chain.js";
+import { burnPos, buyPos, buybackBurn, sendSolFromVault } from "./chain.js";
 import { crank, executeBuybackBurn, executePosBuy, finalizeVote, lapse } from "./engine/vault.js";
 import type { ProjectState } from "./engine/types.js";
 import type { EngineEvent } from "./engine/vault.js";
@@ -86,6 +86,15 @@ export const flushChain = async (project: ProjectState, at: number): Promise<Eng
   if (posQueued > 0n) {
     try {
       const bought = await buyPos(posQueued);
+      if (project.status === "abandoned") {
+        try {
+          await burnPos(bought.out);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          chain.posUnburned = (n(chain.posUnburned) + bought.out).toString();
+          logger.warn("pos burn waiting", { mint: project.mint, message });
+        }
+      }
       events.push(...executePosBuy(project, at, bought.out));
       chain.posSpent = (n(chain.posSpent) + posQueued).toString();
       if (bought.sig) {
@@ -94,6 +103,17 @@ export const flushChain = async (project: ProjectState, at: number): Promise<Eng
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("pos buy waiting", { mint: project.mint, message });
+    }
+  }
+
+  const unburned = n(chain.posUnburned);
+  if (project.status === "abandoned" && unburned > 0n) {
+    try {
+      await burnPos(unburned);
+      chain.posUnburned = "0";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("pos burn waiting", { mint: project.mint, message });
     }
   }
 

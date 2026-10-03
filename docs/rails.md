@@ -32,6 +32,6 @@ The ledger moves first. The crank then sends from the vault wallet.
 1. Fees land in the vault. We send 15% to the builder and 10% to the platform. 75% stays.
 2. Pay: 60% of the remaining vault is paid to the builder in SOL.
 3. Burn vote: 60% buys $POS (`H49xNgg1hMV6LqXK6if2g8CYnrvp7CxQ5SJTnDRwPoS`) and burns it.
-4. Miss: that same slice buys $POS and burns it. Lapse and abandon buy and burn $POS with the remaining vault. None of these buy the project coin.
+4. Abandon moves the remaining vault into a $POS buy and burn. The crank keeps claiming that coin's creator fees from trading. The whole fee buys $POS (`H49xNgg1hMV6LqXK6if2g8CYnrvp7CxQ5SJTnDRwPoS`) and burns the tokens. It does not pay runway or the platform after abandon.
 
 If a send or swap fails, the bucket stays queued and the next crank retries.

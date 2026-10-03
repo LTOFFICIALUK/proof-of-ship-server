@@ -119,6 +119,42 @@ const jupiterSwap = async (inputMint: string, outputMint: string, lamports: bigi
 
 export const buyPos = async (lamports: bigint) => jupiterSwap(SOL_MINT, POS_MINT, lamports);
 
+export const burnPos = async (amount: bigint) => {
+  if (amount <= 0n) {
+    return "";
+  }
+  const { vaultSigner } = treasury();
+  if (!vaultSigner) {
+    throw new Error("Vault signer missing");
+  }
+  const { getAssociatedTokenAddress, createBurnInstruction, getAccount } = await import("@solana/spl-token");
+  const { Keypair, PublicKey, Transaction, Connection } = await import("@solana/web3.js");
+  const url = rpcUrl();
+  if (!url) {
+    throw new Error("RPC missing");
+  }
+  const connection = new Connection(url, "confirmed");
+  const mint = new PublicKey(POS_MINT);
+  const mintInfo = await connection.getAccountInfo(mint);
+  if (!mintInfo) {
+    throw new Error("POS mint is missing");
+  }
+  const owner = Keypair.fromSecretKey(vaultSigner.secretKey);
+  const ata = await getAssociatedTokenAddress(mint, owner.publicKey, false, mintInfo.owner);
+  const held = await getAccount(connection, ata, "confirmed", mintInfo.owner);
+  const burnAmount = held.amount < amount ? held.amount : amount;
+  if (burnAmount <= 0n) {
+    throw new Error("POS balance is empty");
+  }
+  const tx = new Transaction().add(
+    createBurnInstruction(ata, mint, owner.publicKey, burnAmount, [], mintInfo.owner),
+  );
+  const sig = await connection.sendTransaction(tx, [owner]);
+  await connection.confirmTransaction(sig, "confirmed");
+  logger.info("burned POS", { amount: burnAmount.toString(), sig });
+  return sig;
+};
+
 export const buybackBurn = async (mint: string, lamports: bigint) => {
   const bought = await jupiterSwap(SOL_MINT, mint, lamports);
   try {
