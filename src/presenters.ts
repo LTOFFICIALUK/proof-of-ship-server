@@ -49,12 +49,12 @@ export const presentProject = (project: ProjectState, nowMs: number) => {
     demo: project.demo === true,
     status: project.status,
     nowMs,
-    profile: project.profile ?? {
-      description: "",
-      website: "",
-      github: "",
-      image: "",
-      devBuyBps: 0,
+    profile: {
+      description: project.profile?.description ?? "",
+      website: project.profile?.website ?? "",
+      github: project.profile?.github ?? "",
+      image: publicImage(project.profile?.image ?? ""),
+      devBuyBps: project.profile?.devBuyBps ?? 0,
     },
     chain: {
       vault: project.chain?.vault ?? "",
@@ -99,6 +99,14 @@ export const presentProject = (project: ProjectState, nowMs: number) => {
   };
 };
 
+export const publicImage = (value: string) => {
+  const match = value.trim().match(/^(?:ipfs:\/+|https?:\/\/[^/]+\/ipfs\/)([1-9A-HJ-NP-Za-km-z]+)(.*)$/);
+  if (!match) {
+    return value;
+  }
+  return `https://gateway.pinata.cloud/ipfs/${match[1]}${match[2] ?? ""}`;
+};
+
 export const presentCard = (project: ProjectState) => {
   const current = currentPromise(project);
   return {
@@ -109,7 +117,7 @@ export const presentCard = (project: ProjectState) => {
     status: project.status,
     xHandle: project.xHandle,
     verified: project.verified === true,
-    image: project.profile?.image ?? "",
+    image: publicImage(project.profile?.image ?? ""),
     builderWallet: project.builderWallet,
     promise: current?.text ?? "",
     current: current

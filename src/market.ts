@@ -1,3 +1,5 @@
+import { publicImage } from "./presenters.js";
+
 export type MarketSnapshot = {
   image: string | null;
   website: string | null;
@@ -130,7 +132,7 @@ const loadFresh = async (mint: string): Promise<MarketSnapshot> => {
   const website = websiteRaw && !isXHost(websiteRaw) ? websiteRaw : dexSite && !isXHost(dexSite) ? dexSite : null;
 
   return {
-    image: httpsUrl(pump?.image_uri) ?? httpsUrl(pair?.info?.imageUrl),
+    image: publicImage(httpsUrl(pump?.image_uri) ?? httpsUrl(pair?.info?.imageUrl) ?? "") || null,
     website,
     x,
     marketCapUsd: num(pump?.usd_market_cap) ?? num(pair?.marketCap),
