@@ -105,13 +105,15 @@ export const createPgStore = (): ShipStore => ({
        LIMIT $1`,
       [limit, kinds?.length ? kinds : null],
     );
-    return result.rows.map((row): FeedRow => ({
-      id: row.id,
-      mint: row.mint,
-      kind: row.kind,
-      detail: row.detail,
-      atMs: Number(row.at_ms),
-    }));
+    return result.rows
+      .map((row): FeedRow => ({
+        id: row.id,
+        mint: row.mint,
+        kind: row.kind,
+        detail: row.detail,
+        atMs: Number(row.at_ms),
+      }))
+      .sort((a, b) => Number(b.id) - Number(a.id));
   },
   listProjects: async () => {
     const result = await query<ProjectDb>(

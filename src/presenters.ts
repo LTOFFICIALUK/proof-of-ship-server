@@ -510,7 +510,7 @@ export const presentBurns = (rows: FeedRow[], projects: Map<string, ProjectState
     if (!project) {
       continue;
     }
-    const ordered = [...list].sort((a, b) => Number(a.id) - Number(b.id));
+    const ordered = [...list].sort((a, b) => a.atMs - b.atMs || Number(a.id) - Number(b.id));
     const posOnce: string[] = [];
     const burnOnce: string[] = [];
     let posSticky = "";
