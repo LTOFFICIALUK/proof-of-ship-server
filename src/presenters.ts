@@ -82,6 +82,14 @@ export const presentProject = (project: ProjectState, nowMs: number) => {
       burnBucket: project.burnBucket,
       balance: project.balance,
       posBucket: project.posBucket ?? "0",
+      tradingFeesSol: lamportsToSol(project.creatorFeesEarned ?? "0"),
+      tradingFeesUnspentSol: lamportsToSol(
+        (() => {
+          const earned = BigInt(project.creatorFeesEarned ?? "0");
+          const spent = BigInt(project.creatorFeesSpent ?? "0");
+          return (earned > spent ? earned - spent : 0n).toString();
+        })(),
+      ),
     },
     devLock: project.devLock,
     devUnlocked: project.devUnlocked,

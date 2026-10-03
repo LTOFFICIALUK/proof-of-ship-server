@@ -68,6 +68,19 @@ export const sendSolFromVault = async (to: string, lamports: bigint) => {
   return sig;
 };
 
+export const sendSolFromPlatform = async (to: string, lamports: bigint) => {
+  const { platformSigner } = treasury();
+  if (!platformSigner) {
+    throw new Error("Platform signer missing");
+  }
+  if (lamports <= 0n) {
+    return "";
+  }
+  const sig = await sendTransaction(platformSigner.secretKey, to, lamports);
+  logger.info("platform sent SOL", { to, lamports: lamports.toString(), sig });
+  return sig;
+};
+
 const jupiterSwap = async (inputMint: string, outputMint: string, lamports: bigint) => {
   const { vaultSigner } = treasury();
   if (!vaultSigner) {

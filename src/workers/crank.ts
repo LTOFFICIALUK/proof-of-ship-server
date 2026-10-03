@@ -1,4 +1,5 @@
 import { nowMs } from "../clock.js";
+import { syncTradingFees } from "../creator-fees.js";
 import { claimAbandonedFees, ingestVaultInflows } from "../fees.js";
 import { logger } from "../logger.js";
 import { refillMintBank } from "../mint-bank.js";
@@ -9,6 +10,7 @@ export const runCrank = async (store: ShipStore) => {
   const listed = await store.listProjects();
   const at = nowMs();
   try {
+    await syncTradingFees(store);
     await claimAbandonedFees(listed);
     await ingestVaultInflows(store, at);
   } catch (error) {

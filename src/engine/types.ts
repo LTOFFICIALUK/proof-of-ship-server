@@ -108,6 +108,9 @@ export type ProjectState = {
   builderReceived: string;
   devLock: string;
   devUnlocked: string;
+  creatorFeesEarned?: string;
+  creatorFeesSpent?: string;
+  creatorFeesCursor?: string;
   nextDueAtMs: number | null;
   promises: PromiseState[];
   vote: VoteState | null;
