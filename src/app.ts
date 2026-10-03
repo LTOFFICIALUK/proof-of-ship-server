@@ -472,10 +472,6 @@ export const buildApp = async (opts: AppOptions) => {
     } catch {
       throw badRequest("That X account is already linked to a launch", "HANDLE_TAKEN");
     }
-    const existing = await opts.store.listProjectsByBuilder(builder.id);
-    if (existing.some((project) => project.status === "active")) {
-      throw badRequest("You already have an active launch", "ACTIVE_LAUNCH");
-    }
     const minted = mintAddress ? null : await claimMint();
     const mint = mintAddress ?? minted?.publicKey;
     if (!mint) {
@@ -566,13 +562,6 @@ export const buildApp = async (opts: AppOptions) => {
     const body = launchSchema.parse(request.body);
     if (!body.image) {
       throw badRequest("Add a coin image.");
-    }
-    const builder = await opts.store.getBuilderByWallet(wallet);
-    if (builder) {
-      const existing = await opts.store.listProjectsByBuilder(builder.id);
-      if (existing.some((project) => project.status === "active")) {
-        throw badRequest("You already have an active launch", "ACTIVE_LAUNCH");
-      }
     }
     if (opts.allowSim) {
       return { mode: "sim", mint: "", transactions: [] as string[] };
