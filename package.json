@@ -10,7 +10,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "tsx --test src/engine/vault.test.ts src/holdings.test.ts src/app.test.ts src/mint-bank.test.ts src/auth.test.ts",
+    "test": "tsx --test src/engine/vault.test.ts src/holdings.test.ts src/app.test.ts src/mint-bank.test.ts src/auth.test.ts src/profile.test.ts",
     "e2e": "tsx scripts/e2e.ts"
   },
   "dependencies": {

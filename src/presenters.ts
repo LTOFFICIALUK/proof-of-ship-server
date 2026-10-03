@@ -1,7 +1,7 @@
 import type { ProjectState, PromiseState } from "./engine/types.js";
 import { QUORUM_BPS } from "./engine/types.js";
 import { POS_MINT } from "./pos.js";
-import type { FeedRow } from "./store/memory.js";
+import type { FeedRow, HolderVoteRow } from "./store/memory.js";
 
 const lamportsToSol = (lamports: string) => Number(lamports) / 1_000_000_000;
 
@@ -183,6 +183,189 @@ export const builderRecord = (projects: ProjectState[]) => {
     burnedSol: Number(sum((project) => project.burned) + sum((project) => project.burnBucket)) / 1_000_000_000,
     launches: projects.length,
     abandoned: projects.filter((project) => project.status === "abandoned").length,
+  };
+};
+
+export type ProfileAttention = {
+  kind: "verify" | "coin";
+  mint: string;
+  name: string;
+  symbol: string;
+  text: string;
+  dueMs: number | null;
+};
+
+const sideOf = (side: string) => (side === "down" || side === "burn" ? "burn" : "pay");
+
+export const presentProfile = (
+  wallet: string,
+  handle: string,
+  verified: boolean,
+  projects: ProjectState[],
+  votes: HolderVoteRow[],
+  nowMs: number,
+) => {
+  const mine = projects.filter((project) => project.builderWallet === wallet);
+  const record = builderRecord(mine);
+  const sumLamports = (pick: (project: ProjectState) => string) =>
+    Number(mine.reduce((total, project) => total + BigInt(pick(project) || "0"), 0n)) / 1_000_000_000;
+  const sumRaw = (pick: (project: ProjectState) => string) =>
+    mine.reduce((total, project) => total + BigInt(pick(project) || "0"), 0n).toString();
+  const byMint = new Map(projects.map((project) => [project.mint, project]));
+  const seen = new Set<string>();
+  const cast: {
+    mint: string;
+    name: string;
+    symbol: string;
+    promiseIdx: number;
+    text: string;
+    side: "pay" | "burn";
+    reason: string;
+  }[] = [];
+  const pushVote = (mint: string, idx: number, side: string, reason: string) => {
+    const key = `${mint}:${idx}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    const project = byMint.get(mint);
+    cast.push({
+      mint,
+      name: project?.name ?? "",
+      symbol: project?.symbol ?? "",
+      promiseIdx: idx,
+      text: project?.promises.find((item) => item.idx === idx)?.text ?? "",
+      side: sideOf(side),
+      reason,
+    });
+  };
+  for (const vote of votes) {
+    if (vote.wallet === wallet) {
+      pushVote(vote.mint, vote.promiseIdx, vote.side, vote.reason);
+    }
+  }
+  for (const project of projects) {
+    for (const promise of project.promises) {
+      const row = promise.tally?.find((item) => item.wallet === wallet);
+      if (row) {
+        pushVote(project.mint, promise.idx, row.side, row.reason ?? "");
+      }
+    }
+    const lock = project.vote?.locks.find((item) => item.wallet === wallet);
+    if (project.vote && lock) {
+      pushVote(project.mint, project.vote.promiseIdx, lock.side, "");
+    }
+  }
+
+  const attention: ProfileAttention[] = [];
+  if (!verified) {
+    attention.push({
+      kind: "verify",
+      mint: "",
+      name: "",
+      symbol: "",
+      text: handle ? "Verify X so the tick shows on your coins." : "Verify X before you launch.",
+      dueMs: null,
+    });
+  }
+  for (const project of mine) {
+    if (project.status === "lapsed") {
+      attention.push({
+        kind: "coin",
+        mint: project.mint,
+        name: project.name,
+        symbol: project.symbol,
+        text: "This coin lapsed. Fees are burning.",
+        dueMs: null,
+      });
+    }
+    if (project.status === "abandoned") {
+      attention.push({
+        kind: "coin",
+        mint: project.mint,
+        name: project.name,
+        symbol: project.symbol,
+        text: "This coin is abandoned. The vault burns.",
+        dueMs: null,
+      });
+    }
+    const open = project.promises.find((item) => item.status === "pending" || item.status === "vote_open");
+    if (open?.status === "pending") {
+      attention.push({
+        kind: "coin",
+        mint: project.mint,
+        name: project.name,
+        symbol: project.symbol,
+        text:
+          open.deadlineMs < nowMs
+            ? `Proof was due for "${open.text}".`
+            : `Post proof for "${open.text}".`,
+        dueMs: open.deadlineMs,
+      });
+    }
+    if (open?.status === "vote_open") {
+      attention.push({
+        kind: "coin",
+        mint: project.mint,
+        name: project.name,
+        symbol: project.symbol,
+        text: `Holders are voting on "${open.text}".`,
+        dueMs: project.vote?.endMs ?? null,
+      });
+    }
+    if (!open && project.nextDueAtMs && project.status === "active") {
+      attention.push({
+        kind: "coin",
+        mint: project.mint,
+        name: project.name,
+        symbol: project.symbol,
+        text: "Post the next promise.",
+        dueMs: project.nextDueAtMs,
+      });
+    }
+  }
+  attention.sort((a, b) => (a.dueMs ?? Number.MAX_SAFE_INTEGER) - (b.dueMs ?? Number.MAX_SAFE_INTEGER));
+
+  const timeline = mine
+    .flatMap((project) =>
+      project.promises.map((item) => ({
+        mint: project.mint,
+        name: project.name,
+        symbol: project.symbol,
+        idx: item.idx,
+        text: item.text,
+        status: item.status,
+        deadlineMs: item.deadlineMs,
+        postedAtMs: item.postedAtMs,
+        closedAtMs: item.closedAtMs ?? null,
+        proofUrl: item.proofUrl ?? "",
+      })),
+    )
+    .sort((a, b) => (b.closedAtMs ?? b.postedAtMs) - (a.closedAtMs ?? a.postedAtMs));
+
+  return {
+    wallet,
+    handle,
+    verified,
+    nowMs,
+    stats: {
+      ...record,
+      runwaySol: sumLamports((project) => project.runwayPaid),
+      vaultSol: sumLamports((project) => project.balance),
+      devLock: sumRaw((project) => project.devLock),
+      devUnlocked: sumRaw((project) => project.devUnlocked),
+    },
+    attention,
+    projects: mine
+      .map((project) => ({
+        ...presentCard(project),
+        paidSol: lamportsToSol(project.builderReceived),
+        runwaySol: lamportsToSol(project.runwayPaid),
+        nextDueAtMs: project.nextDueAtMs,
+      }))
+      .sort((a, b) => b.launchedAtMs - a.launchedAtMs),
+    timeline,
+    votes: cast,
   };
 };
 

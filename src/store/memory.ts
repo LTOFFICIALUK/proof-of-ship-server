@@ -47,6 +47,7 @@ export type ShipStore = {
   listMessages: (mint: string, limit: number) => Promise<ChatRow[]>;
   addMessage: (mint: string, wallet: string, text: string, atMs: number) => Promise<ChatRow>;
   listHolderVotes: (mint: string) => Promise<HolderVoteRow[]>;
+  listVotesByWallet: (wallet: string) => Promise<HolderVoteRow[]>;
   upsertHolderVote: (row: HolderVoteRow) => Promise<void>;
 };
 
@@ -126,6 +127,7 @@ export const createMemoryStore = (): ShipStore => {
       return row;
     },
     listHolderVotes: async (mint) => holderVotes.filter((row) => row.mint === mint),
+    listVotesByWallet: async (wallet) => holderVotes.filter((row) => row.wallet === wallet),
     upsertHolderVote: async (vote) => {
       const existing = holderVotes.find(
         (row) =>

@@ -35,6 +35,7 @@ import {
   presentBuilder,
   presentCard,
   presentFeed,
+  presentProfile,
   presentProject,
   siteStats,
   type CoinFilter,
@@ -856,6 +857,20 @@ export const buildApp = async (opts: AppOptions) => {
     const project = await loadProject(opts.store, mint);
     const viewer = await sessionWallet(request);
     return presentLive(opts.store, project, at(request), viewer ?? undefined);
+  });
+
+  app.get("/v1/wallets/:wallet", async (request) => {
+    const { wallet } = request.params as { wallet: string };
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
+      throw badRequest("That wallet address is not valid");
+    }
+    const projects = await opts.store.listProjects();
+    const link = await auth.getX(wallet);
+    const mine = projects.filter((project) => project.builderWallet === wallet);
+    const handle = link?.xHandle || mine.find((project) => project.xHandle)?.xHandle || "";
+    const verified = Boolean(link) || mine.some((project) => project.verified === true);
+    const votes = await opts.store.listVotesByWallet(wallet);
+    return presentProfile(wallet, handle, verified, projects, votes, at(request));
   });
 
   app.get("/v1/builders/:handle", async (request) => {

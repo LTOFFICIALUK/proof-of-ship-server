@@ -149,6 +149,31 @@ export const createPgStore = (): ShipStore => ({
     );
     return { id: result.rows[0].id, mint, wallet, text, atMs };
   },
+  listVotesByWallet: async (wallet) => {
+    const result = await query<{
+      mint: string;
+      promise_idx: number;
+      wallet: string;
+      side: "up" | "down";
+      reason: string | null;
+      message: string | null;
+      signature: string | null;
+    }>(
+      `SELECT mint, promise_idx, wallet, side, reason, message, signature
+       FROM holder_votes WHERE wallet = $1
+       ORDER BY updated_at DESC`,
+      [wallet],
+    );
+    return result.rows.map((row): HolderVoteRow => ({
+      mint: row.mint,
+      promiseIdx: Number(row.promise_idx),
+      wallet: row.wallet,
+      side: row.side === "down" ? "down" : "up",
+      reason: row.reason ?? "",
+      message: row.message ?? "",
+      signature: row.signature ?? "",
+    }));
+  },
   listHolderVotes: async (mint) => {
     const result = await query<{
       mint: string;
