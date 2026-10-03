@@ -1,6 +1,14 @@
 import { createRequire } from "node:module";
 import { ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, type AddressLookupTableAccount, type TransactionInstruction } from "@solana/web3.js";
-import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  NATIVE_MINT,
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
+  createTransferInstruction,
+  getAccount,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { rpcUrl } from "./chain.js";
@@ -10,6 +18,7 @@ import { treasury } from "./wallets.js";
 
 const LAUNCH_LOOKUP_TABLE = new PublicKey("9JKxba9ybJZ69kVxyL8KVjjuFYR6TknwBDYUbkB3nQ1X");
 const SHARING_ACCOUNT_BYTES = 1024;
+const CREATE_COST_LAMPORTS = 20_000_000n;
 
 const require = createRequire(import.meta.url);
 const sdk = require("@pump-fun/pump-sdk") as {
@@ -124,6 +133,205 @@ const pack = (
     tx.sign(signers);
   }
   return Buffer.from(tx.serialize()).toString("base64");
+};
+
+const platformKey = () => {
+  const keys = treasury();
+  if (!keys.platformSigner || !keys.vault) {
+    throw new Error("Platform wallet is not configured.");
+  }
+  return {
+    vault: new PublicKey(keys.vault),
+    platform: Keypair.fromSecretKey(keys.platformSigner.secretKey),
+  };
+};
+
+const devBuyLamports = async (draft: LaunchDraft) => {
+  if (draft.devBuyBps <= 0) {
+    return 0n;
+  }
+  const online = new sdk.OnlinePumpSdk(connectionOf());
+  const [global, feeConfig] = await Promise.all([online.fetchGlobal(), online.fetchFeeConfig()]);
+  const supply = new BN(1_000_000_000).mul(new BN(1_000_000));
+  const tokens = supply.muln(draft.devBuyBps).divn(10_000);
+  const sol = sdk.getBuySolAmountFromTokenAmount({
+    global,
+    feeConfig,
+    mintSupply: null,
+    bondingCurve: null,
+    amount: tokens,
+    quoteMint: NATIVE_MINT,
+  });
+  return BigInt(sol.toString());
+};
+
+export const buildLaunchPayment = async (draft: LaunchDraft, userWallet: string) => {
+  const { platform } = platformKey();
+  const buy = await devBuyLamports(draft);
+  const total = CREATE_COST_LAMPORTS + buy;
+  const user = new PublicKey(userWallet);
+  const connection = connectionOf();
+  const { blockhash } = await connection.getLatestBlockhash("confirmed");
+  const transaction = pack(
+    [SystemProgram.transfer({ fromPubkey: user, toPubkey: platform.publicKey, lamports: Number(total) })],
+    user,
+    blockhash,
+    [],
+  );
+  return { transaction, totalLamports: total, platformWallet: platform.publicKey.toBase58() };
+};
+
+const sendEncoded = async (encoded: string) => {
+  const connection = connectionOf();
+  const tx = VersionedTransaction.deserialize(Buffer.from(encoded, "base64"));
+  let signature = "";
+  try {
+    signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/already been processed|already processed/i.test(message)) {
+      const existing = tx.signatures[0];
+      if (!existing || existing.every((byte) => byte === 0)) {
+        throw new Error("The payment was already sent.");
+      }
+      signature = bs58.encode(existing);
+    } else if (/blockhash not found|expired/i.test(message)) {
+      throw new Error("That confirmation expired. Start the launch again.");
+    } else {
+      throw new Error(message || "The payment was rejected.");
+    }
+  }
+  const confirmed = await connection.confirmTransaction(signature, "confirmed");
+  if (confirmed.value.err) {
+    throw new Error("The payment failed on chain.");
+  }
+  return signature;
+};
+
+const paidTransfer = (encoded: string, user: PublicKey, platform: PublicKey, expected: bigint) => {
+  const tx = VersionedTransaction.deserialize(Buffer.from(encoded, "base64"));
+  const keys = tx.message.staticAccountKeys;
+  if (!keys[0]?.equals(user)) {
+    throw new Error("The payment is signed by the wrong wallet.");
+  }
+  const message = tx.message.serialize();
+  const userSig = tx.signatures[0];
+  if (!userSig || !nacl.sign.detached.verify(message, userSig, user.toBytes())) {
+    throw new Error("The payment signature is invalid.");
+  }
+  const system = SystemProgram.programId;
+  for (const ix of tx.message.compiledInstructions) {
+    const program = keys[ix.programIdIndex];
+    if (!program?.equals(system)) {
+      continue;
+    }
+    const data = Buffer.from(ix.data);
+    if (data.length < 12 || data.readUInt32LE(0) !== 2) {
+      continue;
+    }
+    const lamports = data.readBigUInt64LE(4);
+    const from = keys[ix.accountKeyIndexes[0] ?? -1];
+    const to = keys[ix.accountKeyIndexes[1] ?? -1];
+    if (from?.equals(user) && to?.equals(platform) && lamports >= expected) {
+      return tx;
+    }
+  }
+  throw new Error("The payment does not cover the launch.");
+};
+
+const refundPayment = async (platform: Keypair, user: PublicKey, lamports: bigint) => {
+  const connection = connectionOf();
+  const balance = BigInt(await connection.getBalance(platform.publicKey));
+  const keep = 5_000_000n;
+  const send = balance > lamports + keep ? lamports : balance > keep ? balance - keep : 0n;
+  if (send <= 0n) {
+    return;
+  }
+  const { blockhash } = await connection.getLatestBlockhash("confirmed");
+  const encoded = pack(
+    [SystemProgram.transfer({ fromPubkey: platform.publicKey, toPubkey: user, lamports: Number(send) })],
+    platform.publicKey,
+    blockhash,
+    [platform],
+  );
+  await sendEncoded(encoded);
+};
+
+export const settlePaidLaunch = async (encoded: string, draft: LaunchDraft, mint: MintKey, userWallet: string, expected: bigint) => {
+  const { platform, vault } = platformKey();
+  const user = new PublicKey(userWallet);
+  paidTransfer(encoded, user, platform.publicKey, expected);
+  await sendEncoded(encoded);
+  const mintKey = Keypair.fromSecretKey(bs58.decode(mint.secretKey));
+  try {
+    const uri = await uploadMetadata(draft);
+    const connection = connectionOf();
+    const online = new sdk.OnlinePumpSdk(connection);
+    const [global, feeConfig] = await Promise.all([online.fetchGlobal(), online.fetchFeeConfig()]);
+    const createIxs = await createInstructions(draft, mintKey.publicKey, platform.publicKey, uri, global, feeConfig);
+    const lookup = await connection.getAddressLookupTable(LAUNCH_LOOKUP_TABLE);
+    if (!lookup.value) {
+      throw new Error("Launch lookup table is not ready.");
+    }
+    const { blockhash } = await connection.getLatestBlockhash("confirmed");
+    const launchTx = pack(
+      [ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ...createIxs],
+      platform.publicKey,
+      blockhash,
+      [platform, mintKey],
+      [lookup.value],
+    );
+    await sendEncoded(launchTx);
+    const shareIx = await sdk.PUMP_SDK.createFeeSharingConfig({
+      creator: platform.publicKey,
+      mint: mintKey.publicKey,
+      pool: null,
+    });
+    const updateIx = await sdk.PUMP_SDK.updateFeeSharesV2({
+      authority: platform.publicKey,
+      mint: mintKey.publicKey,
+      currentShareholders: [platform.publicKey],
+      newShareholders: [{ address: vault, shareBps: 10_000 }],
+      quoteMint: NATIVE_MINT,
+      quoteTokenProgram: TOKEN_PROGRAM_ID,
+    });
+    const { blockhash: lockHash } = await connection.getLatestBlockhash("confirmed");
+    const lockTx = pack(
+      [ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), shareIx, updateIx],
+      platform.publicKey,
+      lockHash,
+      [platform],
+      [lookup.value],
+    );
+    await sendEncoded(lockTx);
+    await assertFeeLock(mint.publicKey);
+    if (draft.devBuyBps > 0) {
+      const source = getAssociatedTokenAddressSync(mintKey.publicKey, platform.publicKey, true, TOKEN_2022_PROGRAM_ID);
+      const destination = getAssociatedTokenAddressSync(mintKey.publicKey, user, true, TOKEN_2022_PROGRAM_ID);
+      const held = await getAccount(connection, source, "confirmed", TOKEN_2022_PROGRAM_ID);
+      if (held.amount > 0n) {
+        const { blockhash: sendHash } = await connection.getLatestBlockhash("confirmed");
+        const sendTx = pack(
+          [
+            createAssociatedTokenAccountIdempotentInstruction(platform.publicKey, destination, user, mintKey.publicKey, TOKEN_2022_PROGRAM_ID),
+            createTransferInstruction(source, destination, platform.publicKey, held.amount, [], TOKEN_2022_PROGRAM_ID),
+          ],
+          platform.publicKey,
+          sendHash,
+          [platform],
+        );
+        await sendEncoded(sendTx);
+      }
+    }
+  } catch (error) {
+    const curve = await connectionOf().getAccountInfo(mintKey.publicKey).catch(() => null);
+    if (!curve) {
+      await refundPayment(platform, user, expected).catch((refundError) => {
+        logger.error("launch refund failed", { message: refundError instanceof Error ? refundError.message : "" });
+      });
+    }
+    throw error;
+  }
 };
 
 export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey, userWallet: string) => {

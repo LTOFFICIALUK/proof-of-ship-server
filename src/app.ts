@@ -42,7 +42,7 @@ import {
   type CoinFilter,
 } from "./presenters.js";
 import { claimMint, depositMint, markMintUsed, MintBankEmptyError, readyCount, releaseMint, reserveMint, reservedFor } from "./mint-bank.js";
-import { broadcastBuy, broadcastLaunch, buildLaunchTransactions, relayLaunchTransaction } from "./pump-launch.js";
+import { broadcastBuy, buildLaunchPayment, relayLaunchTransaction, settlePaidLaunch, type LaunchDraft } from "./pump-launch.js";
 import { logger } from "./logger.js";
 import { advanceProject } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
@@ -228,6 +228,7 @@ export const buildApp = async (opts: AppOptions) => {
   const auth = opts.auth ?? createMemoryAuth();
   const lastChat = new Map<string, number>();
   const launchDrafts = new Map<string, z.infer<typeof launchSchema>>();
+  const launchQuotes = new Map<string, { lamports: bigint; draft: LaunchDraft }>();
   const reports = new Set<string>();
   const app = Fastify({ logger: false, bodyLimit: 2_000_000 });
 
@@ -579,21 +580,25 @@ export const buildApp = async (opts: AppOptions) => {
       throw error;
     }
     try {
-      const transactions = await buildLaunchTransactions(
-        {
-          name: body.name,
-          symbol: body.symbol,
-          description: body.description ?? "",
-          image: body.image,
-          website: body.website ?? "",
-          twitter: link.xHandle,
-          devBuyBps: body.devBuyBps ?? 0,
-        },
-        reserved,
-        wallet,
-      );
+      const draft: LaunchDraft = {
+        name: body.name,
+        symbol: body.symbol,
+        description: body.description ?? "",
+        image: body.image,
+        website: body.website ?? "",
+        twitter: link.xHandle,
+        devBuyBps: body.devBuyBps ?? 0,
+      };
+      const payment = await buildLaunchPayment(draft, wallet);
       launchDrafts.set(wallet, body);
-      return { mode: "live", mint: reserved.publicKey, transactions };
+      launchQuotes.set(wallet, { lamports: payment.totalLamports, draft });
+      return {
+        mode: "live",
+        mint: reserved.publicKey,
+        transactions: [payment.transaction],
+        lamports: payment.totalLamports.toString(),
+        platformWallet: payment.platformWallet,
+      };
     } catch (error) {
       await releaseMint(reserved.publicKey).catch(() => undefined);
       throw badRequest(launchMessage(error));
@@ -640,9 +645,15 @@ export const buildApp = async (opts: AppOptions) => {
     if (!reserved) {
       throw badRequest("That launch expired. Start again.");
     }
+    const quote = launchQuotes.get(wallet);
+    const signed = body.transactions?.[0];
+    if (!quote || !signed) {
+      throw badRequest("Start the launch again.");
+    }
     let landed = false;
     try {
-      await broadcastLaunch(body.transactions ?? [], reserved, wallet);
+      await settlePaidLaunch(signed, quote.draft, reserved, wallet, quote.lamports);
+      launchQuotes.delete(wallet);
       landed = true;
       const project = (await opts.store.getProject(reserved.publicKey)) ?? (await createLaunch(wallet, body, at(request), reserved.publicKey));
       launchDrafts.delete(wallet);
