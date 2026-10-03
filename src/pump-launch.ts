@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { ComputeBudgetProgram, Connection, Keypair, PublicKey, TransactionMessage, VersionedTransaction, type AddressLookupTableAccount, type TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, type AddressLookupTableAccount, type TransactionInstruction } from "@solana/web3.js";
 import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
@@ -9,6 +9,7 @@ import type { MintKey } from "./mint-bank.js";
 import { treasury } from "./wallets.js";
 
 const LAUNCH_LOOKUP_TABLE = new PublicKey("9JKxba9ybJZ69kVxyL8KVjjuFYR6TknwBDYUbkB3nQ1X");
+const SHARING_ACCOUNT_BYTES = 1024;
 
 const require = createRequire(import.meta.url);
 const sdk = require("@pump-fun/pump-sdk") as {
@@ -140,6 +141,14 @@ export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey,
   const connection = connectionOf();
   const online = new sdk.OnlinePumpSdk(connection);
   const [global, feeConfig] = await Promise.all([online.fetchGlobal(), online.fetchFeeConfig()]);
+  if (!keys.platformSigner) {
+    throw new Error("Platform wallet is not configured.");
+  }
+  const platform = Keypair.fromSecretKey(keys.platformSigner.secretKey);
+  const rent = await connection.getMinimumBalanceForRentExemption(SHARING_ACCOUNT_BYTES);
+  if ((await connection.getBalance(platform.publicKey)) < rent) {
+    throw new Error("The platform wallet cannot cover fee rent right now.");
+  }
   const createIxs = await createInstructions(draft, mintKey, user, uri, global, feeConfig);
   const shareIx = await sdk.PUMP_SDK.createFeeSharingConfig({
     creator: user,
@@ -176,10 +185,16 @@ export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey,
     throw new Error("The launch transaction failed simulation. Nothing was sent.");
   }
   const lockTx = pack(
-    [ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), shareIx, updateIx],
+    [
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      SystemProgram.transfer({ fromPubkey: platform.publicKey, toPubkey: user, lamports: rent }),
+      shareIx,
+      updateIx,
+    ],
     user,
     blockhash,
     [],
+    [lookup.value],
   );
   return [launchTx, lockTx];
 };
@@ -229,10 +244,10 @@ const createInstructions = async (
   });
 };
 
-const addMintSignature = (tx: VersionedTransaction, mintKey: Keypair) => {
+const addKeypairSignature = (tx: VersionedTransaction, signer: Keypair) => {
   const keys = tx.message.staticAccountKeys;
   const required = tx.message.header.numRequiredSignatures;
-  const index = keys.findIndex((key, i) => i < required && key.equals(mintKey.publicKey));
+  const index = keys.findIndex((key, i) => i < required && key.equals(signer.publicKey));
   if (index < 0) {
     return;
   }
@@ -240,13 +255,24 @@ const addMintSignature = (tx: VersionedTransaction, mintKey: Keypair) => {
   if (existing?.some((byte) => byte !== 0)) {
     return;
   }
-  tx.sign([mintKey]);
+  tx.sign([signer]);
 };
 
-const sendSigned = async (encoded: string, user: PublicKey, mint: PublicKey, mintKey?: Keypair) => {
+const launchSigners = (mint: MintKey) => {
+  const keys = treasury();
+  if (!keys.platformSigner) {
+    throw new Error("Platform wallet is not configured.");
+  }
+  return [
+    Keypair.fromSecretKey(bs58.decode(mint.secretKey)),
+    Keypair.fromSecretKey(keys.platformSigner.secretKey),
+  ];
+};
+
+const sendSigned = async (encoded: string, user: PublicKey, mint: PublicKey, signers: Keypair[]) => {
   const tx = VersionedTransaction.deserialize(Buffer.from(encoded, "base64"));
-  if (mintKey) {
-    addMintSignature(tx, mintKey);
+  for (const signer of signers) {
+    addKeypairSignature(tx, signer);
   }
   const keys = tx.message.staticAccountKeys;
   if (!keys[0]?.equals(user)) {
@@ -313,22 +339,17 @@ export const assertFeeLock = async (mintAddress: string) => {
 };
 
 export const relayLaunchTransaction = async (encoded: string, mint: MintKey, userWallet: string) =>
-  sendSigned(
-    encoded,
-    new PublicKey(userWallet),
-    new PublicKey(mint.publicKey),
-    Keypair.fromSecretKey(bs58.decode(mint.secretKey)),
-  );
+  sendSigned(encoded, new PublicKey(userWallet), new PublicKey(mint.publicKey), launchSigners(mint));
 
 export const broadcastLaunch = async (encoded: string[], mint: MintKey, userWallet: string) => {
-  if (encoded.length < 1) {
-    throw new Error("Sign the launch in Phantom.");
+  if (encoded.length < 2) {
+    throw new Error("Sign both launch transactions. Nothing was sent.");
   }
   const user = new PublicKey(userWallet);
-  const mintKey = Keypair.fromSecretKey(bs58.decode(mint.secretKey));
+  const signers = launchSigners(mint);
   const signatures: string[] = [];
   for (const item of encoded) {
-    signatures.push(await sendSigned(item, user, mintKey.publicKey, mintKey));
+    signatures.push(await sendSigned(item, user, signers[0]!.publicKey, signers));
   }
   await assertFeeLock(mint.publicKey);
   return signatures;
@@ -383,4 +404,4 @@ export const buildDevBuy = async (mintAddress: string, userWallet: string, devBu
 };
 
 export const broadcastBuy = async (encoded: string, mintAddress: string, userWallet: string) =>
-  sendSigned(encoded, new PublicKey(userWallet), new PublicKey(mintAddress));
+  sendSigned(encoded, new PublicKey(userWallet), new PublicKey(mintAddress), []);
