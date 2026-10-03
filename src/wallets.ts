@@ -2,7 +2,7 @@ import nacl from "tweetnacl";
 import bs58 from "bs58";
 
 export const MINT_SUFFIX = "PoS";
-export const MINT_BANK_TARGET = Number(process.env.MINT_BANK_TARGET || 24);
+export const MINT_BANK_TARGET = Number(process.env.MINT_BANK_TARGET || 50);
 
 const asSecret = (value: string | undefined) => {
   if (!value) {
