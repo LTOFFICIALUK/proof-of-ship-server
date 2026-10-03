@@ -558,6 +558,35 @@ describe("http e2e", { timeout: 300_000 }, () => {
     assert.match(badge.body, /@launchdev/);
   });
 
+  it("uses the coin page as the token website when the launch has none", async () => {
+    const linked = pair();
+    await auth.linkX(linked.publicKey, "pagelink", "pagelink");
+    const session = await signIn(app, linked.publicKey, linked.secretKey);
+    const launched = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie: session },
+      payload: { ...launchBody("Page", t0 + 4 * DAY), website: "", linkPage: true },
+    });
+    assert.equal(launched.statusCode, 200, launched.body);
+    const mint = launched.json().mint as string;
+    const coin = (await app.inject({ method: "GET", url: `/v1/projects/${mint}` })).json();
+    assert.equal(coin.profile.website, `https://proofofship.fun/c/${mint}`);
+
+    const skippedBuilder = pair();
+    await auth.linkX(skippedBuilder.publicKey, "nopage", "nopage");
+    const skippedSession = await signIn(app, skippedBuilder.publicKey, skippedBuilder.secretKey);
+    const skipped = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie: skippedSession },
+      payload: { ...launchBody("Skip", t0 + 4 * DAY), website: "", linkPage: false },
+    });
+    assert.equal(skipped.statusCode, 200, skipped.body);
+    const skippedCoin = (await app.inject({ method: "GET", url: `/v1/projects/${skipped.json().mint}` })).json();
+    assert.equal(skippedCoin.profile.website, "");
+  });
+
   it("rejects a write with no session and a signature for the wrong wallet", async () => {
     const open = await app.inject({
       method: "POST",

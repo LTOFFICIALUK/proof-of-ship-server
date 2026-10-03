@@ -77,6 +77,14 @@ const imageSchema = z
   }, "Drop an image or paste an https image link")
   .optional();
 
+const siteOrigin = (frontendOrigin: string) => {
+  const https = frontendOrigin
+    .split(",")
+    .map((item) => item.trim())
+    .find((item) => item.startsWith("https://"));
+  return (https || "https://proofofship.fun").replace(/\/$/, "");
+};
+
 const promiseSchema = z.object({
   title: z.string().trim().min(1, "Add a promise title").max(80, "Keep the title under 80 characters"),
   doneLooksLike: z.string().trim().max(500, "Keep it under 500 characters").optional(),
@@ -434,9 +442,21 @@ export const buildApp = async (opts: AppOptions) => {
     image: imageSchema,
     website: linkSchema,
     github: linkSchema,
+    linkPage: z.boolean().optional(),
     devBuyBps: z.number().int().min(0).max(500).optional(),
     promise: promiseSchema,
   });
+
+  const tokenWebsite = (website: string | undefined, linkPage: boolean | undefined, mint: string) => {
+    const own = (website ?? "").trim();
+    if (own) {
+      return own;
+    }
+    if (linkPage === false) {
+      return "";
+    }
+    return `${siteOrigin(opts.frontendOrigin)}/c/${mint}`;
+  };
 
   const launchSteps = (body: z.infer<typeof launchSchema>) => {
     const keys = treasury();
@@ -507,7 +527,7 @@ export const buildApp = async (opts: AppOptions) => {
     created.project.chain = destinations();
     created.project.profile = {
       description: body.description ?? "",
-      website: body.website ?? "",
+      website: tokenWebsite(body.website, body.linkPage, mint),
       github: body.github ?? "",
       image: body.image ?? "",
       devBuyBps: body.devBuyBps ?? 0,
@@ -581,7 +601,7 @@ export const buildApp = async (opts: AppOptions) => {
         symbol: body.symbol,
         description: body.description ?? "",
         image: body.image,
-        website: body.website ?? "",
+        website: tokenWebsite(body.website, body.linkPage, reserved.publicKey),
         twitter: link.xHandle,
         devBuyBps: body.devBuyBps ?? 0,
       };
