@@ -257,7 +257,32 @@ const refundPayment = async (platform: Keypair, user: PublicKey, lamports: bigin
   await sendEncoded(encoded);
 };
 
-export const settlePaidLaunch = async (encoded: string, draft: LaunchDraft, mint: MintKey, userWallet: string, expected: bigint) => {
+const rememberLaunch = async (save: () => Promise<void>) => {
+  let last: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await save();
+      return;
+    } catch (error) {
+      last = error;
+      logger.error("could not save the launch", {
+        attempt,
+        message: error instanceof Error ? error.message : "",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+  }
+  throw last instanceof Error ? last : new Error("The coin is live but it could not be listed.");
+};
+
+export const settlePaidLaunch = async (
+  encoded: string,
+  draft: LaunchDraft,
+  mint: MintKey,
+  userWallet: string,
+  expected: bigint,
+  onCreated: () => Promise<void>,
+) => {
   const { platform, vault } = platformKey();
   const user = new PublicKey(userWallet);
   paidTransfer(encoded, user, platform.publicKey, expected);
@@ -282,6 +307,7 @@ export const settlePaidLaunch = async (encoded: string, draft: LaunchDraft, mint
       [lookup.value],
     );
     await sendEncoded(launchTx);
+    await rememberLaunch(onCreated);
     const shareIx = await sdk.PUMP_SDK.createFeeSharingConfig({
       creator: platform.publicKey,
       mint: mintKey.publicKey,
@@ -324,13 +350,23 @@ export const settlePaidLaunch = async (encoded: string, draft: LaunchDraft, mint
       }
     }
   } catch (error) {
-    const curve = await connectionOf().getAccountInfo(mintKey.publicKey).catch(() => null);
-    if (!curve) {
+    const created = await connectionOf().getAccountInfo(mintKey.publicKey).catch(() => null);
+    if (!created) {
       await refundPayment(platform, user, expected).catch((refundError) => {
         logger.error("launch refund failed", { message: refundError instanceof Error ? refundError.message : "" });
       });
+      throw error;
     }
-    throw error;
+    await rememberLaunch(onCreated).catch((saveError) => {
+      logger.error("coin exists but listing failed", {
+        mint: mint.publicKey,
+        message: saveError instanceof Error ? saveError.message : "",
+      });
+    });
+    logger.error("coin is listed but a follow up step failed", {
+      mint: mint.publicKey,
+      message: error instanceof Error ? error.message : "",
+    });
   }
 };
 

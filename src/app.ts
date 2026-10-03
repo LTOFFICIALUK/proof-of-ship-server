@@ -648,7 +648,14 @@ export const buildApp = async (opts: AppOptions) => {
     }
     let landed = false;
     try {
-      await settlePaidLaunch(signed, quote.draft, reserved, wallet, quote.lamports);
+      const saveLaunch = async () => {
+        const existing = await opts.store.getProject(reserved.publicKey);
+        if (existing) {
+          return;
+        }
+        await createLaunch(wallet, body, at(request), reserved.publicKey);
+      };
+      await settlePaidLaunch(signed, quote.draft, reserved, wallet, quote.lamports, saveLaunch);
       launchQuotes.delete(wallet);
       landed = true;
       const project = (await opts.store.getProject(reserved.publicKey)) ?? (await createLaunch(wallet, body, at(request), reserved.publicKey));
