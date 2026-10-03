@@ -16,7 +16,7 @@ const ensureChain = (project: ProjectState) => {
 export const payCuts = async (project: ProjectState, at: number): Promise<EngineEvent[]> => {
   const events: EngineEvent[] = [];
   const keys = treasury();
-  if (!keys.vaultSigner) {
+  if (project.demo !== false || !keys.vaultSigner) {
     return events;
   }
   ensureChain(project);
@@ -58,7 +58,7 @@ export const payCuts = async (project: ProjectState, at: number): Promise<Engine
 
 export const flushChain = async (project: ProjectState, at: number): Promise<EngineEvent[]> => {
   const events: EngineEvent[] = [];
-  if (!treasury().vaultSigner) {
+  if (project.demo !== false || !treasury().vaultSigner) {
     return events;
   }
   ensureChain(project);

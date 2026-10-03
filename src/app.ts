@@ -97,10 +97,10 @@ const scoped = (projects: ProjectState[], scope: unknown) => {
   if (scope === "demo") {
     return projects.filter((project) => project.demo !== false);
   }
-  if (scope === "live") {
-    return projects.filter((project) => project.demo === false);
+  if (scope === "all") {
+    return projects;
   }
-  return projects;
+  return projects.filter((project) => project.demo === false);
 };
 
 const loadProject = async (store: ShipStore, mint: string) => {

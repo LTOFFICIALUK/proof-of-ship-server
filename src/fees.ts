@@ -80,8 +80,10 @@ export const ingestVaultInflows = async (store: ShipStore, nowMs: number) => {
       continue;
     }
     const project = matchMint(accounts, byMint);
-    if (!project) {
-      logger.warn("vault inflow with no mint", { signature, lamports: inflow.toString() });
+    if (!project || project.demo !== false) {
+      if (!project) {
+        logger.warn("vault inflow with no mint", { signature, lamports: inflow.toString() });
+      }
       continue;
     }
     const builder = await store.getBuilderByWallet(project.builderWallet);
