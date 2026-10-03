@@ -1,7 +1,8 @@
 import { createRequire } from "node:module";
-import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, type TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Connection, Keypair, PublicKey, TransactionMessage, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
 import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import bs58 from "bs58";
+import nacl from "tweetnacl";
 import { rpcUrl } from "./chain.js";
 import { logger } from "./logger.js";
 import type { MintKey } from "./mint-bank.js";
@@ -103,14 +104,16 @@ const uploadMetadata = async (draft: LaunchDraft) => {
 };
 
 const pack = (instructions: TransactionInstruction[], feePayer: PublicKey, blockhash: string, signers: Keypair[]) => {
-  const tx = new Transaction();
-  tx.add(...instructions);
-  tx.feePayer = feePayer;
-  tx.recentBlockhash = blockhash;
+  const message = new TransactionMessage({
+    payerKey: feePayer,
+    recentBlockhash: blockhash,
+    instructions,
+  }).compileToV0Message();
+  const tx = new VersionedTransaction(message);
   if (signers.length) {
-    tx.partialSign(...signers);
+    tx.sign(signers);
   }
-  return tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
+  return Buffer.from(tx.serialize()).toString("base64");
 };
 
 export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey, userWallet: string) => {
@@ -155,19 +158,23 @@ export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey,
   ];
 };
 
-const mentionsMint = (tx: Transaction, mint: PublicKey) =>
-  tx.instructions.some((instruction) => instruction.keys.some((key) => key.pubkey.equals(mint)));
-
 const sendSigned = async (encoded: string, user: PublicKey, mint: PublicKey) => {
-  const tx = Transaction.from(Buffer.from(encoded, "base64"));
-  if (!tx.feePayer?.equals(user)) {
+  const tx = VersionedTransaction.deserialize(Buffer.from(encoded, "base64"));
+  const keys = tx.message.staticAccountKeys;
+  if (!keys[0]?.equals(user)) {
     throw new Error("The launch is signed by the wrong wallet.");
   }
-  if (!mentionsMint(tx, mint)) {
+  if (!keys.some((key) => key.equals(mint))) {
     throw new Error("The launch transaction does not use the reserved address.");
   }
-  if (!tx.verifySignatures()) {
-    throw new Error("The launch signature is invalid.");
+  const message = tx.message.serialize();
+  const required = tx.message.header.numRequiredSignatures;
+  for (let i = 0; i < required; i += 1) {
+    const sig = tx.signatures[i];
+    const key = keys[i];
+    if (!sig || !key || !nacl.sign.detached.verify(message, sig, key.toBytes())) {
+      throw new Error("The launch signature is invalid.");
+    }
   }
   const connection = connectionOf();
   let signature = "";
@@ -176,8 +183,8 @@ const sendSigned = async (encoded: string, user: PublicKey, mint: PublicKey) => 
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     if (/already been processed|already processed/i.test(message)) {
-      const existing = tx.signatures[0]?.signature;
-      if (!existing) {
+      const existing = tx.signatures[0];
+      if (!existing || existing.every((byte) => byte === 0)) {
         throw new Error("The launch transaction was already sent.");
       }
       signature = bs58.encode(existing);
