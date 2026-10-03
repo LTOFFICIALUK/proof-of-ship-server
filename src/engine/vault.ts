@@ -258,6 +258,13 @@ export const airdrop = (
   setBalance(project, wallet, walletBalance(project, wallet) + amount);
 };
 
+export const setHolding = (project: ProjectState, wallet: string, amount: bigint) => {
+  if (amount < 0n) {
+    throw new EngineError("BALANCE", "A balance cannot be negative");
+  }
+  setBalance(project, wallet, amount);
+};
+
 export const appendPromise = (
   project: ProjectState,
   text: string,

@@ -86,9 +86,9 @@ const asBig = (value: unknown) => {
   return 0n;
 };
 
-const loadChain = async (mint: string) => {
+const loadChain = async (mint: string, fresh = false) => {
   const hit = cache.get(mint);
-  if (hit && Date.now() - hit.at < CACHE_MS) {
+  if (!fresh && hit && Date.now() - hit.at < CACHE_MS) {
     return hit;
   }
   const supplyResult = (await rpc("getTokenSupply", [mint])) as {
@@ -134,13 +134,13 @@ const simHoldings = (project: ProjectState, wallets: string[]) => {
   return { ok: true as const, supply: BigInt(project.circulatingSupply), balances };
 };
 
-export const loadHoldings = async (project: ProjectState, wallets: string[]) => {
+export const loadHoldings = async (project: ProjectState, wallets: string[], fresh = false) => {
   if (!wallets.length) {
     return simHoldings(project, wallets);
   }
   if (heliusUrl()) {
     try {
-      const chain = await loadChain(project.mint);
+      const chain = await loadChain(project.mint, fresh);
       const balances = new Map<string, bigint>();
       for (const wallet of wallets) {
         balances.set(wallet, chain.byOwner.get(wallet) ?? 0n);
@@ -169,7 +169,7 @@ export const snapshotBalances = async (
     return { ...project.balances };
   }
   try {
-    const chain = await loadChain(project.mint);
+    const chain = await loadChain(project.mint, true);
     return Object.fromEntries(
       [...chain.byOwner.entries()].map(([wallet, amount]) => [wallet, amount.toString()]),
     );
@@ -183,6 +183,6 @@ export const snapshotBalances = async (
 };
 
 export const balanceOf = async (project: ProjectState, wallet: string) => {
-  const holdings = await loadHoldings(project, [wallet]);
+  const holdings = await loadHoldings(project, [wallet], true);
   return { ok: holdings.ok, amount: holdings.balances.get(wallet) ?? 0n };
 };

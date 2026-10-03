@@ -43,7 +43,7 @@ export const weighVotes = async (
 ) => {
   const excluded = [project.builderWallet, ...(project.excludedWallets ?? [])];
   const wallets = [...new Set([...votes.map((row) => row.wallet), ...excluded])];
-  const holdings = await loadHoldings(project, wallets);
+  const holdings = await loadHoldings(project, wallets, true);
   let excludedBalance = 0n;
   for (const wallet of new Set(excluded)) {
     excludedBalance += holdings.balances.get(wallet) ?? 0n;

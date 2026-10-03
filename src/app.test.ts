@@ -318,6 +318,69 @@ describe("http e2e", { timeout: 300_000 }, () => {
     assert.equal(tally.payWeight, two.toString());
   });
 
+  it("drops a vote after a sale and keeps it while the coins are held", async () => {
+    const { session, mint } = await launch("selldev", "Sell after voting", clock + 10 * DAY);
+    const seller = pair();
+    const holder = pair();
+    const sellerSession = await signIn(app, seller.publicKey, seller.secretKey);
+    const holderSession = await signIn(app, holder.publicKey, holder.secretKey);
+    const two = (DEFAULT_SUPPLY * 200n) / 10_000n;
+    const one = two / 2n;
+    await airdrop(mint, seller.publicKey, two);
+    await airdrop(mint, holder.publicKey, two);
+    assert.equal((await ship(mint, session)).statusCode, 200);
+
+    const soldVote = await vote(app, sellerSession, seller.secretKey, mint, "pay");
+    assert.equal(soldVote.statusCode, 200);
+    const heldVote = await vote(app, holderSession, holder.secretKey, mint, "burn", "Still holding");
+    assert.equal(heldVote.statusCode, 200);
+
+    const partial = await app.inject({
+      method: "POST",
+      url: "/v1/sim/balance",
+      payload: { mint, wallet: seller.publicKey, amount: one.toString() },
+    });
+    assert.equal(partial.statusCode, 200, partial.body);
+    const stillHeld = (
+      await app.inject({
+        method: "GET",
+        url: `/v1/coins/${mint}`,
+        headers: { cookie: sellerSession },
+      })
+    ).json();
+    assert.equal(stillHeld.viewer.weight, one.toString());
+    assert.equal(stillHeld.promises[0].yourSide, "pay");
+    assert.equal(stillHeld.promises[0].voters, 2);
+
+    const sold = await app.inject({
+      method: "POST",
+      url: "/v1/sim/balance",
+      payload: { mint, wallet: seller.publicKey, amount: "0" },
+    });
+    assert.equal(sold.statusCode, 200);
+    const afterSale = (
+      await app.inject({
+        method: "GET",
+        url: `/v1/coins/${mint}`,
+        headers: { cookie: sellerSession },
+      })
+    ).json();
+    assert.equal(afterSale.viewer.weight, "0");
+    assert.equal(afterSale.promises[0].yourSide, null);
+    assert.equal(afterSale.promises[0].voters, 1);
+
+    clock += VOTE_WINDOW_MS;
+    await app.inject({ method: "POST", url: "/v1/crank" });
+    const closed = (await app.inject({ method: "GET", url: `/v1/projects/${mint}` })).json();
+    assert.equal(closed.promises[0].status, "burned");
+    const tally = (
+      await app.inject({ method: "GET", url: `/v1/coins/${mint}/promises/0/tally` })
+    ).json();
+    assert.equal(tally.payWeight, "0");
+    assert.equal(tally.burnWeight, two.toString());
+    assert.equal(tally.voters, 1);
+  });
+
   it("rejects a forged vote and a replayed nonce", async () => {
     const { session, mint } = await launch("forgedev", "Forge test", clock + 5 * DAY);
     const holder = pair();

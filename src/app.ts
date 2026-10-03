@@ -20,6 +20,7 @@ import {
   createProject,
   creditFees,
   markShipped,
+  setHolding,
 } from "./engine/vault.js";
 import { getNowMs, setNowMs } from "./clock.js";
 import { HttpError, badRequest, notFound, unauthorized } from "./lib/errors.js";
@@ -125,17 +126,18 @@ const presentLive = async (
       const state = project.promises.find((entry) => entry.idx === item.idx)!;
       const rows = votes.filter((row) => row.promiseIdx === item.idx);
       const mine = rows.find((row) => row.wallet === viewer);
-      const yourSide = mine ? (mine.side === "down" ? "burn" : "pay") : null;
+      const signedSide = mine ? (mine.side === "down" ? "burn" : "pay") : null;
       if (item.status === "vote_open") {
         const weighed = await weighVotes(project, state, rows);
+        const mineWeight = weighed.rows.find((row) => row.wallet === viewer)?.weight ?? 0n;
         return {
           ...item,
           upPct: null,
           downPct: null,
           netPct: null,
           turnoutPct: weighed.ok ? pctOf(weighed.pay + weighed.burn, weighed.eligible) : null,
-          voters: rows.length,
-          yourSide,
+          voters: weighed.rows.filter((row) => row.weight > 0n).length,
+          yourSide: mineWeight > 0n ? signedSide : null,
         };
       }
       if (state.tally) {
@@ -146,14 +148,15 @@ const presentLive = async (
         const burn = state.tally
           .filter((row) => row.side === "burn")
           .reduce((sum, row) => sum + BigInt(row.weight), 0n);
+        const counted = state.tally.find((row) => row.wallet === viewer);
         return {
           ...item,
           upPct: pctOf(pay, base),
           downPct: pctOf(burn, base),
           netPct: item.resultNet,
           turnoutPct: pctOf(pay + burn, base),
-          voters: state.tally.length,
-          yourSide,
+          voters: state.tally.filter((row) => BigInt(row.weight) > 0n).length,
+          yourSide: counted && BigInt(counted.weight) > 0n ? (counted.side === "burn" ? "burn" : "pay") : null,
         };
       }
       return {
@@ -163,7 +166,7 @@ const presentLive = async (
         netPct: item.resultNet,
         turnoutPct: null,
         voters: rows.length,
-        yourSide,
+        yourSide: signedSide,
       };
     }),
   );
@@ -887,7 +890,7 @@ export const buildApp = async (opts: AppOptions) => {
           promiseIdx: promise.idx,
           open: true,
           status: promise.status,
-          voters: rows.length,
+          voters: weighed.rows.filter((row) => row.weight > 0n).length,
           turnoutPct: weighed.ok ? pctOf(weighed.pay + weighed.burn, weighed.eligible) : null,
         };
       }
@@ -905,6 +908,7 @@ export const buildApp = async (opts: AppOptions) => {
         eligibleSupply: promise.eligibleAtClose ?? project.circulatingSupply,
         payWeight: sum("pay").toString(),
         burnWeight: sum("burn").toString(),
+        voters: votes.filter((row) => BigInt(row.weight) > 0n).length,
         resultNet: promise.resultNet ?? null,
         messageFormat: voteMessage({
           mint: "<mint>",
@@ -1163,6 +1167,24 @@ export const buildApp = async (opts: AppOptions) => {
         throw notFound("Builder missing");
       }
       airdrop(project, body.wallet, BigInt(body.amount));
+      await persist(opts.store, builder.id, project, []);
+      return presentProject(project, at(request));
+    });
+
+    app.post("/v1/sim/balance", async (request) => {
+      const body = z
+        .object({
+          mint: z.string(),
+          wallet: walletSchema,
+          amount: z.string().regex(/^[0-9]+$/),
+        })
+        .parse(request.body);
+      const project = await loadProject(opts.store, body.mint);
+      const builder = await opts.store.getBuilderByWallet(project.builderWallet);
+      if (!builder) {
+        throw notFound("Builder missing");
+      }
+      setHolding(project, body.wallet, BigInt(body.amount));
       await persist(opts.store, builder.id, project, []);
       return presentProject(project, at(request));
     });
