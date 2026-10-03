@@ -15,7 +15,7 @@ const sdk = require("@pump-fun/pump-sdk") as {
     createFeeSharingConfig: (input: Record<string, unknown>) => Promise<TransactionInstruction>;
     updateFeeSharesV2: (input: Record<string, unknown>) => Promise<TransactionInstruction>;
     buyV2Instructions: (input: Record<string, unknown>) => Promise<TransactionInstruction[]>;
-    decodeSharingConfig: (data: Buffer) => {
+    decodeSharingConfig: (accountInfo: { data: Buffer }) => {
       adminRevoked: boolean;
       shareholders: { address: PublicKey; shareBps: number }[];
     };
@@ -237,7 +237,7 @@ export const assertFeeLock = async (mintAddress: string) => {
   if (!info) {
     throw new Error("Fees were not locked to the vault. The coin was not listed.");
   }
-  const config = sdk.PUMP_SDK.decodeSharingConfig(info.data);
+  const config = sdk.PUMP_SDK.decodeSharingConfig(info);
   const locked = config.shareholders.length === 1 && config.shareholders[0]?.address.equals(vault) && config.shareholders[0]?.shareBps === 10_000;
   if (!locked || !config.adminRevoked) {
     logger.warn("fee lock mismatch", {

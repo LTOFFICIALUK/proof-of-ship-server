@@ -227,6 +227,7 @@ export const buildApp = async (opts: AppOptions) => {
   };
   const auth = opts.auth ?? createMemoryAuth();
   const lastChat = new Map<string, number>();
+  const launchDrafts = new Map<string, z.infer<typeof launchSchema>>();
   const reports = new Set<string>();
   const app = Fastify({ logger: false, bodyLimit: 2_000_000 });
 
@@ -591,6 +592,7 @@ export const buildApp = async (opts: AppOptions) => {
         reserved,
         wallet,
       );
+      launchDrafts.set(wallet, body);
       return { mode: "live", mint: reserved.publicKey, transactions };
     } catch (error) {
       await releaseMint(reserved.publicKey).catch(() => undefined);
@@ -607,7 +609,17 @@ export const buildApp = async (opts: AppOptions) => {
     }
     try {
       const signature = await relayLaunchTransaction(body.transaction, reserved, wallet);
-      return { ok: true, signature };
+      const draft = launchDrafts.get(wallet);
+      const existing = await opts.store.getProject(reserved.publicKey);
+      if (!existing && draft) {
+        try {
+          await createLaunch(wallet, draft, at(request), reserved.publicKey);
+        } catch (error) {
+          logger.warn("could not list the coin after create", { mint: reserved.publicKey, message: launchMessage(error) });
+        }
+      }
+      const listed = Boolean(await opts.store.getProject(reserved.publicKey));
+      return { ok: true, signature, mint: reserved.publicKey, listed };
     } catch (error) {
       throw badRequest(launchMessage(error));
     }
@@ -632,7 +644,8 @@ export const buildApp = async (opts: AppOptions) => {
     try {
       await broadcastLaunch(body.transactions ?? [], reserved, wallet);
       landed = true;
-      const project = await createLaunch(wallet, body, at(request), reserved.publicKey);
+      const project = (await opts.store.getProject(reserved.publicKey)) ?? (await createLaunch(wallet, body, at(request), reserved.publicKey));
+      launchDrafts.delete(wallet);
       await markMintUsed(reserved.publicKey);
       let buyTransaction: string | null = null;
       if ((body.devBuyBps ?? 0) > 0) {
