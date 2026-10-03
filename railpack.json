@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "buildAptPackages": ["curl", "bzip2"],
+  "deploy": {
+    "aptPackages": ["libssl3", "libudev1"],
+    "startCommand": "npm run start"
+  }
+}

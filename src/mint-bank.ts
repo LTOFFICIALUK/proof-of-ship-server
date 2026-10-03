@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,7 +51,44 @@ let grinding = false;
 
 export const mintEndsWithPos = (publicKey: string) => publicKey.endsWith(MINT_SUFFIX);
 
-export const grindMint = (suffix = MINT_SUFFIX): Promise<MintKey> =>
+const keygenBin = () => {
+  if (process.env.SOLANA_KEYGEN && existsSync(process.env.SOLANA_KEYGEN)) {
+    return process.env.SOLANA_KEYGEN;
+  }
+  const bundled = path.resolve(process.cwd(), "bin", "solana-keygen");
+  if (existsSync(bundled)) {
+    return bundled;
+  }
+  return "solana-keygen";
+};
+
+const grindNative = async (suffix: string): Promise<MintKey> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "pos-mint-"));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        keygenBin(),
+        ["grind", "--ends-with", `${suffix}:1`, "--num-threads", String(Math.max(1, os.availableParallelism()))],
+        { cwd: dir, timeout: 10 * 60 * 1000 },
+        (error) => (error ? reject(error) : resolve()),
+      );
+    });
+    const file = (await readdir(dir)).find((name) => name.endsWith(".json"));
+    if (!file) {
+      throw new Error("Mint grind did not write a key.");
+    }
+    const bytes = Uint8Array.from(JSON.parse(await readFile(path.join(dir, file), "utf8")) as number[]);
+    const publicKey = bs58.encode(bytes.subarray(32));
+    if (!publicKey.endsWith(suffix)) {
+      throw new Error("Mint grind returned the wrong suffix.");
+    }
+    return { publicKey, secretKey: bs58.encode(bytes) };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+};
+
+const grindJs = (suffix: string): Promise<MintKey> =>
   new Promise((resolve, reject) => {
     let settled = false;
     const workers: Worker[] = [];
@@ -98,6 +137,19 @@ export const grindMint = (suffix = MINT_SUFFIX): Promise<MintKey> =>
       });
     }
   });
+
+export const grindMint = async (suffix = MINT_SUFFIX): Promise<MintKey> => {
+  try {
+    return await grindNative(suffix);
+  } catch (error) {
+    const missing = error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
+    if (!missing) {
+      throw error;
+    }
+    logger.warn("solana-keygen is not installed, using the slow grinder");
+    return grindJs(suffix);
+  }
+};
 
 export const useMemoryMintBank = () => {
   useMemory = true;
