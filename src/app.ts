@@ -455,7 +455,7 @@ export const buildApp = async (opts: AppOptions) => {
         detail:
           (body.devBuyBps ?? 0) === 0
             ? "No extra buy at launch."
-            : `Buy ${(body.devBuyBps ?? 0) / 100}% of supply. Builders still cannot vote.`,
+            : `Buy ${(body.devBuyBps ?? 0) / 100}% of supply. It stays locked and is not sent to your wallet. A Pay unlocks 20 percent of what is still locked. A Burn burns 20 percent of what is still locked. A lapse or an abandon burns the rest. Builders still cannot vote.`,
       },
       { title: "Track the vault", detail: "Every fee, payout, and burn is written to the ledger and sent from the vault wallet." },
     ];
