@@ -40,7 +40,9 @@ import {
   siteStats,
   type CoinFilter,
 } from "./presenters.js";
-import { claimMint, depositMint, readyCount } from "./mint-bank.js";
+import { claimMint, depositMint, markMintUsed, MintBankEmptyError, readyCount, releaseMint, reserveMint, reservedFor } from "./mint-bank.js";
+import { broadcastBuy, broadcastLaunch, buildDevBuy, buildLaunchTransactions } from "./pump-launch.js";
+import { logger } from "./logger.js";
 import { advanceProject } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
 import { destinations, MINT_SUFFIX, pumpFeeShares, treasury } from "./wallets.js";
@@ -454,7 +456,7 @@ export const buildApp = async (opts: AppOptions) => {
     ];
   };
 
-  const createLaunch = async (wallet: string, body: z.infer<typeof launchSchema>, nowMs: number) => {
+  const createLaunch = async (wallet: string, body: z.infer<typeof launchSchema>, nowMs: number, mintAddress?: string) => {
     const link = await auth.getX(wallet);
     if (!link) {
       throw badRequest("Verify your X account before you launch");
@@ -469,11 +471,15 @@ export const buildApp = async (opts: AppOptions) => {
     if (existing.some((project) => project.status === "active")) {
       throw badRequest("You already have an active launch", "ACTIVE_LAUNCH");
     }
-    const mint = await claimMint();
+    const minted = mintAddress ? null : await claimMint();
+    const mint = mintAddress ?? minted?.publicKey;
+    if (!mint) {
+      throw new MintBankEmptyError();
+    }
     let created;
     try {
       created = createProject({
-        mint: mint.publicKey,
+        mint,
         name: body.name,
         symbol: body.symbol,
         builderWallet: wallet,
@@ -490,7 +496,9 @@ export const buildApp = async (opts: AppOptions) => {
         ],
       });
     } catch (error) {
-      await depositMint(mint);
+      if (minted) {
+        await depositMint(minted);
+      }
       throw error;
     }
     created.project.verified = true;
@@ -531,11 +539,120 @@ export const buildApp = async (opts: AppOptions) => {
     };
   });
 
+  const launchMessage = (error: unknown) => {
+    if (error instanceof MintBankEmptyError) {
+      return error.message;
+    }
+    if (error instanceof HttpError) {
+      return error.message;
+    }
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    return "Could not launch.";
+  };
+
+  app.post("/v1/launch/prepare", async (request) => {
+    const wallet = await requireWallet(request);
+    const link = await auth.getX(wallet);
+    if (!link) {
+      throw badRequest("Verify your X account before you launch");
+    }
+    const body = launchSchema.parse(request.body);
+    if (!body.image) {
+      throw badRequest("Add a coin image.");
+    }
+    if (opts.allowSim) {
+      return { mode: "sim", mint: "", transactions: [] as string[] };
+    }
+    let reserved;
+    try {
+      reserved = await reserveMint(wallet);
+    } catch (error) {
+      if (error instanceof MintBankEmptyError) {
+        throw new HttpError(503, "MINT_BANK", error.message);
+      }
+      throw error;
+    }
+    try {
+      const transactions = await buildLaunchTransactions(
+        {
+          name: body.name,
+          symbol: body.symbol,
+          description: body.description ?? "",
+          image: body.image,
+          website: body.website ?? "",
+          twitter: link.xHandle,
+          devBuyBps: body.devBuyBps ?? 0,
+        },
+        reserved,
+        wallet,
+      );
+      return { mode: "live", mint: reserved.publicKey, transactions };
+    } catch (error) {
+      await releaseMint(reserved.publicKey).catch(() => undefined);
+      throw badRequest(launchMessage(error));
+    }
+  });
+
   app.post("/v1/launch/submit", async (request) => {
     const wallet = await requireWallet(request);
-    const body = launchSchema.parse(request.body);
-    const project = await createLaunch(wallet, body, at(request));
-    return { mode: "live", listed: true, mint: project.mint, project: presentProject(project, at(request)) };
+    const body = launchSchema
+      .extend({
+        transactions: z.array(z.string().min(1)).max(3).optional(),
+      })
+      .parse(request.body);
+    if (opts.allowSim && !body.transactions?.length) {
+      const project = await createLaunch(wallet, body, at(request));
+      return { mode: "live", listed: true, mint: project.mint, project: presentProject(project, at(request)), buyTransaction: null };
+    }
+    const reserved = await reservedFor(wallet);
+    if (!reserved) {
+      throw badRequest("That launch expired. Start again.");
+    }
+    let landed = false;
+    try {
+      await broadcastLaunch(body.transactions ?? [], reserved, wallet);
+      landed = true;
+      const project = await createLaunch(wallet, body, at(request), reserved.publicKey);
+      await markMintUsed(reserved.publicKey);
+      let buyTransaction: string | null = null;
+      if ((body.devBuyBps ?? 0) > 0) {
+        try {
+          buyTransaction = (await buildDevBuy(reserved.publicKey, wallet, body.devBuyBps ?? 0)) || null;
+        } catch (error) {
+          logger.warn("dev buy build failed", { mint: reserved.publicKey, message: launchMessage(error) });
+        }
+      }
+      return {
+        mode: "live",
+        listed: true,
+        mint: project.mint,
+        project: presentProject(project, at(request)),
+        buyTransaction,
+      };
+    } catch (error) {
+      if (landed) {
+        await markMintUsed(reserved.publicKey).catch(() => undefined);
+      }
+      throw badRequest(launchMessage(error));
+    }
+  });
+
+  app.post("/v1/launch/:mint/buy", async (request) => {
+    const wallet = await requireWallet(request);
+    const { mint } = request.params as { mint: string };
+    const body = z.object({ transaction: z.string().min(1) }).parse(request.body);
+    const project = await loadProject(opts.store, mint);
+    if (project.builderWallet !== wallet) {
+      throw badRequest("Only the builder can buy at launch.");
+    }
+    try {
+      const signature = await broadcastBuy(body.transaction, mint, wallet);
+      return { ok: true, signature };
+    } catch (error) {
+      throw badRequest(launchMessage(error));
+    }
   });
 
   app.get("/v1/launch/:mint/status", async (request) => {

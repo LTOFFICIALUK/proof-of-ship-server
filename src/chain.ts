@@ -4,7 +4,7 @@ import { treasury } from "./wallets.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
-const rpcUrl = () => {
+export const rpcUrl = () => {
   const key = process.env.HELIUS_API_KEY;
   return key ? `https://mainnet.helius-rpc.com/?api-key=${key}` : process.env.RPC_URL || "";
 };

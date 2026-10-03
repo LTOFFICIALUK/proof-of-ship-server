@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import nacl from "tweetnacl";
 import bs58 from "bs58";
 import { query } from "./db.js";
@@ -13,18 +14,20 @@ export type MintKey = {
 };
 
 const memory: MintKey[] = [];
+const memoryReserved: { key: MintKey; wallet: string; at: number }[] = [];
 const used = new Map<string, MintKey>();
-let useMemory = !process.env.DATABASE_URL;
-let refillTimer: ReturnType<typeof setInterval> | null = null;
-let grinding = false;
 
-export const mintEndsWithPos = (publicKey: string) => publicKey.endsWith(MINT_SUFFIX);
+export class MintBankEmptyError extends Error {
+  constructor() {
+    super("Mint bank is still filling. Try again in a minute.");
+  }
+}
 
-export const grindMint = (suffix = MINT_SUFFIX, yieldEvery = 25_000): Promise<MintKey> =>
-  new Promise((resolve, reject) => {
+const grindInline = (suffix: string) =>
+  new Promise<MintKey>((resolve, reject) => {
     const step = () => {
       try {
-        for (let i = 0; i < yieldEvery; i += 1) {
+        for (let i = 0; i < 32; i += 1) {
           const keys = nacl.sign.keyPair();
           const publicKey = bs58.encode(keys.publicKey);
           if (publicKey.endsWith(suffix)) {
@@ -38,6 +41,51 @@ export const grindMint = (suffix = MINT_SUFFIX, yieldEvery = 25_000): Promise<Mi
       }
     };
     step();
+  });
+let useMemory = !process.env.DATABASE_URL;
+let refillTimer: ReturnType<typeof setInterval> | null = null;
+let grinding = false;
+
+export const mintEndsWithPos = (publicKey: string) => publicKey.endsWith(MINT_SUFFIX);
+
+export const grindMint = (suffix = MINT_SUFFIX): Promise<MintKey> =>
+  new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (key: MintKey) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(key);
+    };
+    const fail = (error: unknown) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    };
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL("./mint-grind-worker.js", import.meta.url), { workerData: { suffix } });
+    } catch {
+      grindInline(suffix).then(finish, fail);
+      return;
+    }
+    const timer = setTimeout(() => {
+      void worker.terminate();
+      fail(new Error("Mint grind timed out"));
+    }, 180_000);
+    worker.once("message", (message: MintKey) => {
+      clearTimeout(timer);
+      void worker.terminate();
+      finish(message);
+    });
+    worker.once("error", () => {
+      clearTimeout(timer);
+      void worker.terminate();
+      grindInline(suffix).then(finish, fail);
+    });
   });
 
 export const useMemoryMintBank = () => {
@@ -116,23 +164,134 @@ const claimPg = async (): Promise<MintKey> => {
      RETURNING public_key, secret_key`,
   );
   const row = result.rows[0];
-  if (row) {
-    const key = { publicKey: row.public_key, secretKey: row.secret_key };
-    keepUsed(key);
+  if (!row) {
     void refillMintBank();
-    return key;
+    throw new MintBankEmptyError();
   }
-  const fresh = await grindMint();
-  await query(
-    `INSERT INTO mint_bank (public_key, secret_key, status, used_at)
-     VALUES ($1, $2, 'used', now())
-     ON CONFLICT (public_key) DO UPDATE SET status = 'used', used_at = now()`,
-    [fresh.publicKey, fresh.secretKey],
-  );
-  keepUsed(fresh);
-  logger.warn("mint bank empty, ground one now", { mint: fresh.publicKey });
+  const key = { publicKey: row.public_key, secretKey: row.secret_key };
+  keepUsed(key);
   void refillMintBank();
-  return fresh;
+  return key;
+};
+
+const expireReserved = async () => {
+  if (useMemory) {
+    const cutoff = Date.now() - 20 * 60 * 1000;
+    for (let i = memoryReserved.length - 1; i >= 0; i -= 1) {
+      const item = memoryReserved[i];
+      if (item && item.at < cutoff) {
+        memoryReserved.splice(i, 1);
+        keepUsed(item.key);
+      }
+    }
+    return;
+  }
+  await query(
+    `UPDATE mint_bank
+     SET status = 'used', used_at = now(), reserved_wallet = NULL
+     WHERE status = 'reserved' AND reserved_at < now() - interval '20 minutes'`,
+  );
+};
+
+export const reserveMint = async (wallet: string): Promise<MintKey> => {
+  await expireReserved();
+  if (useMemory) {
+    for (let i = memoryReserved.length - 1; i >= 0; i -= 1) {
+      const item = memoryReserved[i];
+      if (item?.wallet === wallet) {
+        memoryReserved.splice(i, 1);
+        keepUsed(item.key);
+      }
+    }
+    const next = memory.shift();
+    if (!next) {
+      void refillMintBank();
+      throw new MintBankEmptyError();
+    }
+    memoryReserved.push({ key: next, wallet, at: Date.now() });
+    void refillMintBank();
+    return next;
+  }
+  await query(
+    `UPDATE mint_bank
+     SET status = 'used', used_at = now(), reserved_wallet = NULL
+     WHERE status = 'reserved' AND reserved_wallet = $1`,
+    [wallet],
+  );
+  const result = await query<{ public_key: string; secret_key: string }>(
+    `UPDATE mint_bank
+     SET status = 'reserved', reserved_wallet = $1, reserved_at = now()
+     WHERE public_key = (
+       SELECT public_key FROM mint_bank
+       WHERE status = 'ready'
+       ORDER BY created_at
+       FOR UPDATE SKIP LOCKED
+       LIMIT 1
+     )
+     RETURNING public_key, secret_key`,
+    [wallet],
+  );
+  const row = result.rows[0];
+  if (!row) {
+    void refillMintBank();
+    throw new MintBankEmptyError();
+  }
+  void refillMintBank();
+  return { publicKey: row.public_key, secretKey: row.secret_key };
+};
+
+export const reservedFor = async (wallet: string): Promise<MintKey | null> => {
+  await expireReserved();
+  if (useMemory) {
+    return memoryReserved.find((item) => item.wallet === wallet)?.key ?? null;
+  }
+  const result = await query<{ public_key: string; secret_key: string }>(
+    `SELECT public_key, secret_key FROM mint_bank
+     WHERE status = 'reserved' AND reserved_wallet = $1
+     ORDER BY reserved_at DESC
+     LIMIT 1`,
+    [wallet],
+  );
+  const row = result.rows[0];
+  return row ? { publicKey: row.public_key, secretKey: row.secret_key } : null;
+};
+
+export const releaseMint = async (publicKey: string) => {
+  if (useMemory) {
+    const index = memoryReserved.findIndex((item) => item.key.publicKey === publicKey);
+    if (index >= 0) {
+      const [item] = memoryReserved.splice(index, 1);
+      if (item) {
+        memory.push(item.key);
+      }
+    }
+    return;
+  }
+  await query(
+    `UPDATE mint_bank
+     SET status = 'ready', reserved_wallet = NULL, reserved_at = NULL
+     WHERE public_key = $1 AND status = 'reserved'`,
+    [publicKey],
+  );
+};
+
+export const markMintUsed = async (publicKey: string) => {
+  if (useMemory) {
+    const index = memoryReserved.findIndex((item) => item.key.publicKey === publicKey);
+    if (index >= 0) {
+      const [item] = memoryReserved.splice(index, 1);
+      if (item) {
+        keepUsed(item.key);
+      }
+    }
+    return;
+  }
+  await query(
+    `UPDATE mint_bank
+     SET status = 'used', used_at = now(), reserved_wallet = NULL
+     WHERE public_key = $1`,
+    [publicKey],
+  );
 };
 
 export const getMintSecret = async (publicKey: string) => {
