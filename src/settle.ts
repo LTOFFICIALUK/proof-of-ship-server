@@ -1,5 +1,5 @@
-import { burnPos, buyPos, buybackBurn, sendSolFromVault } from "./chain.js";
-import { crank, executeBuybackBurn, executePosBuy, finalizeVote, lapse } from "./engine/vault.js";
+import { burnHeld, burnPos, buyPos, buyPosFromPlatform, buybackBurn, sellTokenForSol, sendSolFromVault } from "./chain.js";
+import { crank, devLockSaleDue, executeBuybackBurn, executePosBuy, finalizeVote, lapse, noteDevLockSale } from "./engine/vault.js";
 import type { ProjectState } from "./engine/types.js";
 import type { EngineEvent } from "./engine/vault.js";
 import { logger } from "./logger.js";
@@ -138,6 +138,62 @@ export const flushChain = async (
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("pos burn waiting", { mint: project.mint, message });
+    }
+  }
+
+  const platform = treasury().platformSigner;
+  const pendingPlatformBurn = n(chain.platformPosUnburned);
+  if (pendingPlatformBurn > 0n && platform) {
+    try {
+      await burnHeld(POS_MINT, pendingPlatformBurn, platform);
+      chain.platformPosUnburned = "0";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("pos burn waiting", { mint: project.mint, message });
+    }
+  }
+
+  let proceeds = n(chain.devLockProceeds);
+  if (proceeds === 0n && platform) {
+    const due = devLockSaleDue(project, at);
+    if (due > 0n) {
+      try {
+        const sold = await sellTokenForSol(project.mint, due);
+        if (sold.sol > 0n) {
+          proceeds = sold.sol;
+          chain.devLockProceeds = proceeds.toString();
+          project.devLock = "0";
+          project.devLockSellAtMs = null;
+        }
+        logger.info("sold abandoned dev lock", { mint: project.mint, tokens: sold.tokens.toString(), sol: sold.sol.toString(), sig: sold.sig });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn("dev lock sale waiting", { mint: project.mint, message });
+      }
+    }
+  }
+  if (proceeds > 0n && platform) {
+    try {
+      const bought = await buyPosFromPlatform(proceeds);
+      let burnSig = "";
+      try {
+        burnSig = await burnHeld(POS_MINT, bought.out, platform);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        chain.platformPosUnburned = (n(chain.platformPosUnburned) + bought.out).toString();
+        logger.warn("pos burn waiting", { mint: project.mint, message });
+      }
+      const created = noteDevLockSale(project, at, proceeds, bought.out);
+      const target = created[created.length - 1];
+      if (target) {
+        stamp(target.detail, { sig: bought.sig, buySig: bought.sig, burnSig, token: POS_MINT, tokens: bought.out.toString() });
+      }
+      events.push(...created);
+      chain.posSpent = (n(chain.posSpent) + proceeds).toString();
+      chain.devLockProceeds = "0";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("dev lock pos buy waiting", { mint: project.mint, message });
     }
   }
 

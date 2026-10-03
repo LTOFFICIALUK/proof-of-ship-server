@@ -81,15 +81,17 @@ export const sendSolFromPlatform = async (to: string, lamports: bigint) => {
   return sig;
 };
 
-const jupiterSwap = async (inputMint: string, outputMint: string, lamports: bigint) => {
-  const { vaultSigner } = treasury();
-  if (!vaultSigner) {
+type FeeSigner = { publicKey: string; secretKey: Uint8Array };
+
+const jupiterSwap = async (inputMint: string, outputMint: string, amount: bigint, signer?: FeeSigner) => {
+  const owner = signer ?? treasury().vaultSigner;
+  if (!owner) {
     throw new Error("Vault signer missing");
   }
   const quoteUrl = new URL("https://lite-api.jup.ag/swap/v1/quote");
   quoteUrl.searchParams.set("inputMint", inputMint);
   quoteUrl.searchParams.set("outputMint", outputMint);
-  quoteUrl.searchParams.set("amount", lamports.toString());
+  quoteUrl.searchParams.set("amount", amount.toString());
   quoteUrl.searchParams.set("slippageBps", "100");
   const quoteRes = await fetch(quoteUrl, { signal: AbortSignal.timeout(8000), headers: { accept: "application/json" } });
   if (!quoteRes.ok) {
@@ -102,7 +104,7 @@ const jupiterSwap = async (inputMint: string, outputMint: string, lamports: bigi
     signal: AbortSignal.timeout(8000),
     body: JSON.stringify({
       quoteResponse: quote,
-      userPublicKey: vaultSigner.publicKey,
+      userPublicKey: owner.publicKey,
       wrapAndUnwrapSol: true,
     }),
   });
@@ -120,7 +122,7 @@ const jupiterSwap = async (inputMint: string, outputMint: string, lamports: bigi
   }
   const connection = new Connection(url, "confirmed");
   const tx = VersionedTransaction.deserialize(Buffer.from(swap.swapTransaction, "base64"));
-  tx.sign([Keypair.fromSecretKey(vaultSigner.secretKey)]);
+  tx.sign([Keypair.fromSecretKey(owner.secretKey)]);
   const sig = await connection.sendTransaction(tx);
   await connection.confirmTransaction(sig, "confirmed");
   const out =
@@ -131,6 +133,86 @@ const jupiterSwap = async (inputMint: string, outputMint: string, lamports: bigi
 };
 
 export const buyPos = async (lamports: bigint) => jupiterSwap(SOL_MINT, POS_MINT, lamports);
+
+export const sellTokenForSol = async (mint: string, amount: bigint) => {
+  const { platformSigner } = treasury();
+  if (!platformSigner) {
+    throw new Error("Platform signer missing");
+  }
+  if (amount <= 0n) {
+    throw new Error("Nothing to sell");
+  }
+  const { Connection, Keypair, PublicKey } = await import("@solana/web3.js");
+  const { getAssociatedTokenAddress, getAccount } = await import("@solana/spl-token");
+  const url = rpcUrl();
+  if (!url) {
+    throw new Error("RPC missing");
+  }
+  const connection = new Connection(url, "confirmed");
+  const mintKey = new PublicKey(mint);
+  const mintInfo = await connection.getAccountInfo(mintKey);
+  if (!mintInfo) {
+    throw new Error("Mint is missing");
+  }
+  const owner = Keypair.fromSecretKey(platformSigner.secretKey);
+  const ata = await getAssociatedTokenAddress(mintKey, owner.publicKey, false, mintInfo.owner);
+  let held = 0n;
+  try {
+    held = (await getAccount(connection, ata, "confirmed", mintInfo.owner)).amount;
+  } catch {
+    held = 0n;
+  }
+  const sell = held < amount ? held : amount;
+  if (sell <= 0n) {
+    throw new Error("Locked tokens are not in the platform wallet");
+  }
+  const before = BigInt(await connection.getBalance(owner.publicKey));
+  const swap = await jupiterSwap(mint, SOL_MINT, sell, platformSigner);
+  const after = BigInt(await connection.getBalance(owner.publicKey));
+  const gained = after > before ? after - before : 0n;
+  const sol = gained > 0n ? gained : swap.out;
+  return { sig: swap.sig, sol, tokens: sell };
+};
+
+export const buyPosFromPlatform = async (lamports: bigint) => {
+  const { platformSigner } = treasury();
+  if (!platformSigner) {
+    throw new Error("Platform signer missing");
+  }
+  return jupiterSwap(SOL_MINT, POS_MINT, lamports, platformSigner);
+};
+
+export const burnHeld = async (mintAddress: string, amount: bigint, signer: FeeSigner) => {
+  if (amount <= 0n) {
+    return "";
+  }
+  const { getAssociatedTokenAddress, createBurnInstruction, getAccount } = await import("@solana/spl-token");
+  const { Keypair, PublicKey, Transaction, Connection } = await import("@solana/web3.js");
+  const url = rpcUrl();
+  if (!url) {
+    throw new Error("RPC missing");
+  }
+  const connection = new Connection(url, "confirmed");
+  const mint = new PublicKey(mintAddress);
+  const mintInfo = await connection.getAccountInfo(mint);
+  if (!mintInfo) {
+    throw new Error("Mint is missing");
+  }
+  const owner = Keypair.fromSecretKey(signer.secretKey);
+  const ata = await getAssociatedTokenAddress(mint, owner.publicKey, false, mintInfo.owner);
+  const held = await getAccount(connection, ata, "confirmed", mintInfo.owner);
+  const burnAmount = held.amount < amount ? held.amount : amount;
+  if (burnAmount <= 0n) {
+    throw new Error("Token balance is empty");
+  }
+  const tx = new Transaction().add(
+    createBurnInstruction(ata, mint, owner.publicKey, burnAmount, [], mintInfo.owner),
+  );
+  const sig = await connection.sendTransaction(tx, [owner]);
+  await connection.confirmTransaction(sig, "confirmed");
+  logger.info("burned tokens", { mint: mintAddress, amount: burnAmount.toString(), sig });
+  return sig;
+};
 
 export const burnPos = async (amount: bigint) => {
   if (amount <= 0n) {

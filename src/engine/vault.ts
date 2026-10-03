@@ -4,6 +4,7 @@ import {
   DEFAULT_SUPPLY,
   DEV_LOCK_STEP_BPS,
   EngineError,
+  DEV_LOCK_HOLD_MS,
   GRACE_MS,
   EXTEND_MS,
   MAX_DEADLINE_MS,
@@ -171,6 +172,7 @@ export const createProject = (input: {
     builderReceived: "0",
     devLock: s(devLock),
     devUnlocked: s(builderFree),
+    devLockSellAtMs: null,
     creatorFeesEarned: "0",
     creatorFeesSpent: "0",
     creatorFeesCursor: "",
@@ -291,7 +293,10 @@ export const appendPromise = (
   extra: { doneLooksLike?: string; proofType?: PromiseState["proofType"] } = {},
 ): EngineEvent[] => {
   if (project.status === "abandoned") {
-    throw new EngineError("ABANDONED", "Abandoned projects cannot add promises");
+    const until = project.devLockSellAtMs ?? 0;
+    if (!until || nowMs >= until) {
+      throw new EngineError("ABANDONED", "The return window has closed");
+    }
   }
   if (project.promises.length >= MAX_PROMISES) {
     throw new EngineError("TOO_MANY", "At most 20 promises can be queued");
@@ -334,9 +339,10 @@ export const appendPromise = (
     postedBalances: { ...project.balances },
   });
 
-  if (project.status === "lapsed") {
+  if (project.status === "lapsed" || project.status === "abandoned") {
     project.status = "active";
     project.nextDueAtMs = null;
+    project.devLockSellAtMs = null;
   } else if (project.nextDueAtMs) {
     project.nextDueAtMs = null;
   }
@@ -690,12 +696,18 @@ export const abandon = (project: ProjectState, nowMs: number): EngineEvent[] => 
   }
   unlockVotes(project);
   project.vote = null;
+  for (const item of project.promises) {
+    if (item.status === "pending" || item.status === "vote_open") {
+      item.status = "missed";
+      item.closedAtMs = nowMs;
+    }
+  }
   project.status = "abandoned";
   project.nextDueAtMs = null;
   project.posBucket = s(n(project.posBucket) + n(project.balance) + n(project.burnBucket));
   project.burnBucket = "0";
   project.balance = "0";
-  project.devLock = "0";
+  project.devLockSellAtMs = nowMs + DEV_LOCK_HOLD_MS;
   assertInvariant(project);
   return [
     {
@@ -703,6 +715,37 @@ export const abandon = (project: ProjectState, nowMs: number): EngineEvent[] => 
       atMs: nowMs,
       mint: project.mint,
       detail: {},
+    },
+  ];
+};
+
+export const devLockSaleDue = (project: ProjectState, nowMs: number) => {
+  if (project.status !== "abandoned") {
+    return 0n;
+  }
+  const until = project.devLockSellAtMs ?? 0;
+  if (!until || nowMs < until) {
+    return 0n;
+  }
+  return n(project.devLock);
+};
+
+export const noteDevLockSale = (project: ProjectState, nowMs: number, sol: bigint, posOut: bigint): EngineEvent[] => {
+  if (sol <= 0n) {
+    return [];
+  }
+  project.devLock = "0";
+  project.devLockSellAtMs = null;
+  project.accounted = s(n(project.accounted) + sol);
+  project.burned = s(n(project.burned) + sol);
+  project.posBought = s(n(project.posBought) + posOut);
+  assertInvariant(project);
+  return [
+    {
+      kind: "pos",
+      atMs: nowMs,
+      mint: project.mint,
+      detail: { amount: s(sol), tokens: s(posOut), devLock: true },
     },
   ];
 };

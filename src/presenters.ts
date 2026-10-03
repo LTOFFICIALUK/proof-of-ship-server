@@ -93,6 +93,7 @@ export const presentProject = (project: ProjectState, nowMs: number) => {
     },
     devLock: project.devLock,
     devUnlocked: project.devUnlocked,
+    devLockSellAtMs: project.devLockSellAtMs ?? null,
     nextDueAtMs: project.nextDueAtMs,
     promises: project.promises.map(presentPromise),
     vote: project.vote

@@ -13,6 +13,8 @@ import {
 import {
   abandon,
   airdrop,
+  devLockSaleDue,
+  noteDevLockSale,
   appendPromise,
   castVote,
   crank,
@@ -266,7 +268,10 @@ describe("abandon", () => {
     assert.equal(project.posBucket, "7500");
     assert.equal(project.burnBucket, "0");
     assert.equal(project.balance, "0");
-    assert.equal(project.devLock, "0");
+    const locked = project.devLock;
+    assert.notEqual(locked, "0");
+    assert.equal(project.devLockSellAtMs, t0 + 30 * DAY);
+    assert.equal(devLockSaleDue(project, t0 + 30 * DAY - 1), 0n);
     executePosBuy(project, t0, 1n);
     assert.equal(project.burned, "7500");
     assert.equal(project.posBucket, "0");
@@ -274,6 +279,36 @@ describe("abandon", () => {
     assert.equal(project.posBucket, "4000");
     assert.equal(project.accounted, "11500");
     assert.equal(project.runwayPaid, runway);
+    assert.equal(invariantHolds(project), true);
+    assert.equal(devLockSaleDue(project, t0 + 30 * DAY).toString(), locked);
+  });
+
+  it("lets the builder return before the locked bag is sold", () => {
+    const project = launch();
+    const locked = project.devLock;
+    abandon(project, t0);
+    appendPromise(project, "back", t0 + 10 * DAY, t0 + DAY);
+    assert.equal(project.status, "active");
+    assert.equal(project.devLock, locked);
+    assert.equal(project.devLockSellAtMs, null);
+    assert.equal(devLockSaleDue(project, t0 + 30 * DAY), 0n);
+  });
+
+  it("closes the return window after 30 days", () => {
+    const project = launch();
+    abandon(project, t0);
+    assert.throws(() => appendPromise(project, "back", t0 + 40 * DAY, t0 + 30 * DAY), /return window/);
+  });
+
+  it("counts a sold dev bag as burned POS", () => {
+    const project = launch();
+    abandon(project, t0);
+    const events = noteDevLockSale(project, t0 + 30 * DAY, 5_000n, 9n);
+    assert.equal(project.devLock, "0");
+    assert.equal(project.devLockSellAtMs, null);
+    assert.equal(project.burned, "5000");
+    assert.equal(project.posBought, "9");
+    assert.equal(events[0]?.kind, "pos");
     assert.equal(invariantHolds(project), true);
   });
 });

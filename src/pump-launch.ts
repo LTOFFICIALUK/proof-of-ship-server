@@ -1,14 +1,6 @@
 import { createRequire } from "node:module";
 import { ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, type AddressLookupTableAccount, type TransactionInstruction } from "@solana/web3.js";
-import {
-  NATIVE_MINT,
-  TOKEN_2022_PROGRAM_ID,
-  TOKEN_PROGRAM_ID,
-  createAssociatedTokenAccountIdempotentInstruction,
-  createTransferInstruction,
-  getAccount,
-  getAssociatedTokenAddressSync,
-} from "@solana/spl-token";
+import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { rpcUrl } from "./chain.js";
@@ -331,24 +323,6 @@ export const settlePaidLaunch = async (
     );
     await sendEncoded(lockTx);
     await assertFeeLock(mint.publicKey);
-    if (draft.devBuyBps > 0) {
-      const source = getAssociatedTokenAddressSync(mintKey.publicKey, platform.publicKey, true, TOKEN_2022_PROGRAM_ID);
-      const destination = getAssociatedTokenAddressSync(mintKey.publicKey, user, true, TOKEN_2022_PROGRAM_ID);
-      const held = await getAccount(connection, source, "confirmed", TOKEN_2022_PROGRAM_ID);
-      if (held.amount > 0n) {
-        const { blockhash: sendHash } = await connection.getLatestBlockhash("confirmed");
-        const sendTx = pack(
-          [
-            createAssociatedTokenAccountIdempotentInstruction(platform.publicKey, destination, user, mintKey.publicKey, TOKEN_2022_PROGRAM_ID),
-            createTransferInstruction(source, destination, platform.publicKey, held.amount, [], TOKEN_2022_PROGRAM_ID),
-          ],
-          platform.publicKey,
-          sendHash,
-          [platform],
-        );
-        await sendEncoded(sendTx);
-      }
-    }
   } catch (error) {
     const created = await connectionOf().getAccountInfo(mintKey.publicKey).catch(() => null);
     if (!created) {

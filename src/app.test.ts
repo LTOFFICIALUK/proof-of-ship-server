@@ -566,7 +566,7 @@ describe("http e2e", { timeout: 300_000 }, () => {
       method: "POST",
       url: "/v1/projects",
       headers: { cookie: session },
-      payload: { ...launchBody("Page", t0 + 4 * DAY), website: "", linkPage: true },
+      payload: { ...launchBody("Page", clock + 4 * DAY), website: "", linkPage: true },
     });
     assert.equal(launched.statusCode, 200, launched.body);
     const mint = launched.json().mint as string;
@@ -580,7 +580,7 @@ describe("http e2e", { timeout: 300_000 }, () => {
       method: "POST",
       url: "/v1/projects",
       headers: { cookie: skippedSession },
-      payload: { ...launchBody("Skip", t0 + 4 * DAY), website: "", linkPage: false },
+      payload: { ...launchBody("Skip", clock + 4 * DAY), website: "", linkPage: false },
     });
     assert.equal(skipped.statusCode, 200, skipped.body);
     const skippedCoin = (await app.inject({ method: "GET", url: `/v1/projects/${skipped.json().mint}` })).json();
