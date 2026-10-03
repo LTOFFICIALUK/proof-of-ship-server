@@ -12,6 +12,7 @@ const require = createRequire(import.meta.url);
 const sdk = require("@pump-fun/pump-sdk") as {
   PUMP_SDK: {
     createV2Instruction: (input: Record<string, unknown>) => Promise<TransactionInstruction>;
+    createV2AndBuyInstructions: (input: Record<string, unknown>) => Promise<TransactionInstruction[]>;
     createFeeSharingConfig: (input: Record<string, unknown>) => Promise<TransactionInstruction>;
     updateFeeSharesV2: (input: Record<string, unknown>) => Promise<TransactionInstruction>;
     buyV2Instructions: (input: Record<string, unknown>) => Promise<TransactionInstruction[]>;
@@ -128,15 +129,10 @@ export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey,
   const user = new PublicKey(userWallet);
   const mintKey = new PublicKey(mint.publicKey);
   const vault = new PublicKey(keys.vault);
-  const createIx = await sdk.PUMP_SDK.createV2Instruction({
-    mint: mintKey,
-    name: draft.name,
-    symbol: draft.symbol,
-    uri,
-    creator: user,
-    user,
-    mayhemMode: false,
-  });
+  const connection = connectionOf();
+  const online = new sdk.OnlinePumpSdk(connection);
+  const [global, feeConfig] = await Promise.all([online.fetchGlobal(), online.fetchFeeConfig()]);
+  const createIxs = await createInstructions(draft, mintKey, user, uri, global, feeConfig);
   const shareIx = await sdk.PUMP_SDK.createFeeSharingConfig({
     creator: user,
     mint: mintKey,
@@ -150,11 +146,9 @@ export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey,
     quoteMint: NATIVE_MINT,
     quoteTokenProgram: TOKEN_PROGRAM_ID,
   });
-  const connection = connectionOf();
   const { blockhash } = await connection.getLatestBlockhash("confirmed");
-  const limit = (units: number) => ComputeBudgetProgram.setComputeUnitLimit({ units });
-  const createTx = pack([limit(400_000), createIx], user, blockhash, []);
-  const preview = VersionedTransaction.deserialize(Buffer.from(createTx, "base64"));
+  const launchTx = pack(createIxs, user, blockhash, []);
+  const preview = VersionedTransaction.deserialize(Buffer.from(launchTx, "base64"));
   const simulated = await connection.simulateTransaction(preview, {
     sigVerify: false,
     replaceRecentBlockhash: true,
@@ -163,7 +157,58 @@ export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey,
     logger.error("create simulation failed", { err: simulated.value.err, logs: simulated.value.logs });
     throw new Error("The launch transaction failed simulation. Nothing was sent.");
   }
-  return [createTx, pack([limit(500_000), shareIx, updateIx], user, blockhash, [])];
+  const lockTx = pack(
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), shareIx, updateIx],
+    user,
+    blockhash,
+    [],
+  );
+  return [launchTx, lockTx];
+};
+
+const createInstructions = async (
+  draft: LaunchDraft,
+  mint: PublicKey,
+  user: PublicKey,
+  uri: string,
+  global: unknown,
+  feeConfig: unknown,
+) => {
+  if (draft.devBuyBps <= 0) {
+    return [
+      await sdk.PUMP_SDK.createV2Instruction({
+        mint,
+        name: draft.name,
+        symbol: draft.symbol,
+        uri,
+        creator: user,
+        user,
+        mayhemMode: false,
+      }),
+    ];
+  }
+  const supply = new BN(1_000_000_000).mul(new BN(1_000_000));
+  const tokens = supply.muln(draft.devBuyBps).divn(10_000);
+  const sol = sdk.getBuySolAmountFromTokenAmount({
+    global,
+    feeConfig,
+    mintSupply: null,
+    bondingCurve: null,
+    amount: tokens,
+    quoteMint: NATIVE_MINT,
+  });
+  return sdk.PUMP_SDK.createV2AndBuyInstructions({
+    global,
+    mint,
+    name: draft.name,
+    symbol: draft.symbol,
+    uri,
+    creator: user,
+    user,
+    amount: tokens,
+    solAmount: sol,
+    mayhemMode: false,
+  });
 };
 
 const addMintSignature = (tx: VersionedTransaction, mintKey: Keypair) => {
@@ -258,7 +303,7 @@ export const relayLaunchTransaction = async (encoded: string, mint: MintKey, use
   );
 
 export const broadcastLaunch = async (encoded: string[], mint: MintKey, userWallet: string) => {
-  if (encoded.length < 2) {
+  if (encoded.length < 1) {
     throw new Error("Sign the launch in Phantom.");
   }
   const user = new PublicKey(userWallet);
