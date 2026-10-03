@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { ComputeBudgetProgram, Connection, Keypair, PublicKey, TransactionMessage, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Connection, Keypair, PublicKey, TransactionMessage, VersionedTransaction, type AddressLookupTableAccount, type TransactionInstruction } from "@solana/web3.js";
 import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
@@ -7,6 +7,8 @@ import { rpcUrl } from "./chain.js";
 import { logger } from "./logger.js";
 import type { MintKey } from "./mint-bank.js";
 import { treasury } from "./wallets.js";
+
+const LAUNCH_LOOKUP_TABLE = new PublicKey("9JKxba9ybJZ69kVxyL8KVjjuFYR6TknwBDYUbkB3nQ1X");
 
 const require = createRequire(import.meta.url);
 const sdk = require("@pump-fun/pump-sdk") as {
@@ -104,12 +106,18 @@ const uploadMetadata = async (draft: LaunchDraft) => {
   return payload.metadataUri;
 };
 
-const pack = (instructions: TransactionInstruction[], feePayer: PublicKey, blockhash: string, signers: Keypair[]) => {
+const pack = (
+  instructions: TransactionInstruction[],
+  feePayer: PublicKey,
+  blockhash: string,
+  signers: Keypair[],
+  lookupTables: AddressLookupTableAccount[] = [],
+) => {
   const message = new TransactionMessage({
     payerKey: feePayer,
     recentBlockhash: blockhash,
     instructions,
-  }).compileToV0Message();
+  }).compileToV0Message(lookupTables);
   const tx = new VersionedTransaction(message);
   if (signers.length) {
     tx.sign(signers);
@@ -146,8 +154,18 @@ export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey,
     quoteMint: NATIVE_MINT,
     quoteTokenProgram: TOKEN_PROGRAM_ID,
   });
+  const lookup = await connection.getAddressLookupTable(LAUNCH_LOOKUP_TABLE);
+  if (!lookup.value) {
+    throw new Error("Launch lookup table is not ready.");
+  }
   const { blockhash } = await connection.getLatestBlockhash("confirmed");
-  const launchTx = pack(createIxs, user, blockhash, []);
+  const launchTx = pack(
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ...createIxs],
+    user,
+    blockhash,
+    [],
+    [lookup.value],
+  );
   const preview = VersionedTransaction.deserialize(Buffer.from(launchTx, "base64"));
   const simulated = await connection.simulateTransaction(preview, {
     sigVerify: false,
