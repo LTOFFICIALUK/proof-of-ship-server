@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -51,11 +52,19 @@ export const mintEndsWithPos = (publicKey: string) => publicKey.endsWith(MINT_SU
 export const grindMint = (suffix = MINT_SUFFIX): Promise<MintKey> =>
   new Promise((resolve, reject) => {
     let settled = false;
+    const workers: Worker[] = [];
+    const stop = () => {
+      for (const worker of workers) {
+        void worker.terminate();
+      }
+    };
     const finish = (key: MintKey) => {
       if (settled) {
         return;
       }
       settled = true;
+      clearTimeout(timer);
+      stop();
       resolve(key);
     };
     const fail = (error: unknown) => {
@@ -63,29 +72,31 @@ export const grindMint = (suffix = MINT_SUFFIX): Promise<MintKey> =>
         return;
       }
       settled = true;
+      clearTimeout(timer);
+      stop();
       reject(error);
     };
-    let worker: Worker;
-    try {
-      worker = new Worker(new URL("./mint-grind-worker.js", import.meta.url), { workerData: { suffix } });
-    } catch {
-      grindInline(suffix).then(finish, fail);
-      return;
+    const width = Math.max(1, Math.min(os.availableParallelism(), 8));
+    const timer = setTimeout(() => fail(new Error("Mint grind timed out")), 30 * 60 * 1000);
+    let failed = 0;
+    for (let i = 0; i < width; i += 1) {
+      let worker: Worker;
+      try {
+        worker = new Worker(new URL("./mint-grind-worker.js", import.meta.url), { workerData: { suffix } });
+      } catch {
+        grindInline(suffix).then(finish, fail);
+        return;
+      }
+      workers.push(worker);
+      worker.once("message", (message: MintKey) => finish(message));
+      worker.once("error", () => {
+        failed += 1;
+        if (failed < workers.length) {
+          return;
+        }
+        grindInline(suffix).then(finish, fail);
+      });
     }
-    const timer = setTimeout(() => {
-      void worker.terminate();
-      fail(new Error("Mint grind timed out"));
-    }, 180_000);
-    worker.once("message", (message: MintKey) => {
-      clearTimeout(timer);
-      void worker.terminate();
-      finish(message);
-    });
-    worker.once("error", () => {
-      clearTimeout(timer);
-      void worker.terminate();
-      grindInline(suffix).then(finish, fail);
-    });
   });
 
 export const useMemoryMintBank = () => {
@@ -324,6 +335,7 @@ export const refillMintBank = async () => {
   }
   grinding = true;
   try {
+    logger.info("mint bank refill started", { ready: await readyCount(), target: MINT_BANK_TARGET });
     while ((await readyCount()) < MINT_BANK_TARGET) {
       const key = await grindMint();
       await depositMint(key);
