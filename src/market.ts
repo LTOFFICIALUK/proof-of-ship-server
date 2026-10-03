@@ -23,8 +23,10 @@ const empty = (): MarketSnapshot => ({
 const cache = new Map<string, { at: number; data: MarketSnapshot }>();
 const CACHE_MS = 20_000;
 
-const num = (value: unknown) =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+const num = (value: unknown) => {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+};
 
 const httpsUrl = (value: unknown) => {
   if (typeof value !== "string" || !value.trim()) {
@@ -99,7 +101,7 @@ type DexPair = {
 };
 
 const loadFresh = async (mint: string): Promise<MarketSnapshot> => {
-  const [pumpResult, dexResult, holderResult] = await Promise.allSettled([
+  const [pumpResult, dexResult, holderResult, athResult] = await Promise.allSettled([
     fetchJson("https://frontend-api-v3.pump.fun/coins/mints", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -107,6 +109,7 @@ const loadFresh = async (mint: string): Promise<MarketSnapshot> => {
     }),
     fetchJson(`https://api.dexscreener.com/latest/dex/tokens/${mint}`),
     fetchJson(`https://advanced-api-v2.pump.fun/coins/top-holders-and-sol-balance/${mint}`),
+    fetchJson(`https://swap-api.pump.fun/v1/coins/${mint}/ath`),
   ]);
 
   const pump = pumpResult.status === "fulfilled" && Array.isArray(pumpResult.value)
@@ -130,13 +133,18 @@ const loadFresh = async (mint: string): Promise<MarketSnapshot> => {
   const dexX = pair?.info?.socials?.find((item) => item.type === "twitter" || item.type === "x");
   const x = asX(pump?.twitter) ?? (websiteRaw && isXHost(websiteRaw) ? websiteRaw : null) ?? asX(dexX?.url);
   const website = websiteRaw && !isXHost(websiteRaw) ? websiteRaw : dexSite && !isXHost(dexSite) ? dexSite : null;
+  const marketCapUsd = num(pump?.usd_market_cap) ?? num(pair?.marketCap);
+  const reportedAth =
+    num(athResult.status === "fulfilled" && athResult.value && typeof athResult.value === "object" ? (athResult.value as { athMarketCap?: unknown }).athMarketCap : null) ??
+    num(pump?.ath_market_cap);
+  const athUsd = reportedAth == null ? marketCapUsd : marketCapUsd == null ? reportedAth : Math.max(reportedAth, marketCapUsd);
 
   return {
     image: publicImage(httpsUrl(pump?.image_uri) ?? httpsUrl(pair?.info?.imageUrl) ?? "") || null,
     website,
     x,
-    marketCapUsd: num(pump?.usd_market_cap) ?? num(pair?.marketCap),
-    athUsd: num(pump?.ath_market_cap),
+    marketCapUsd,
+    athUsd,
     volumeUsd: num(pair?.volume?.h24) ?? num(pump?.volume_1h_usd),
     holders: pump || pairs.length ? holders : null,
   };
