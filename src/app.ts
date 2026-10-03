@@ -42,7 +42,7 @@ import {
   type CoinFilter,
 } from "./presenters.js";
 import { claimMint, depositMint, markMintUsed, MintBankEmptyError, readyCount, releaseMint, reserveMint, reservedFor } from "./mint-bank.js";
-import { broadcastBuy, broadcastLaunch, buildDevBuy, buildLaunchTransactions, relayLaunchTransaction } from "./pump-launch.js";
+import { broadcastBuy, broadcastLaunch, buildLaunchTransactions, relayLaunchTransaction } from "./pump-launch.js";
 import { logger } from "./logger.js";
 import { advanceProject } from "./settle.js";
 import type { ShipStore } from "./store/memory.js";
@@ -647,14 +647,7 @@ export const buildApp = async (opts: AppOptions) => {
       const project = (await opts.store.getProject(reserved.publicKey)) ?? (await createLaunch(wallet, body, at(request), reserved.publicKey));
       launchDrafts.delete(wallet);
       await markMintUsed(reserved.publicKey);
-      let buyTransaction: string | null = null;
-      if ((body.devBuyBps ?? 0) > 0) {
-        try {
-          buyTransaction = (await buildDevBuy(reserved.publicKey, wallet, body.devBuyBps ?? 0)) || null;
-        } catch (error) {
-          logger.warn("dev buy build failed", { mint: reserved.publicKey, message: launchMessage(error) });
-        }
-      }
+      const buyTransaction = null;
       return {
         mode: "live",
         listed: true,
