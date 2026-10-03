@@ -126,10 +126,10 @@ export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey,
   }
   const uri = await uploadMetadata(draft);
   const user = new PublicKey(userWallet);
-  const mintKey = Keypair.fromSecretKey(bs58.decode(mint.secretKey));
+  const mintKey = new PublicKey(mint.publicKey);
   const vault = new PublicKey(keys.vault);
   const createIx = await sdk.PUMP_SDK.createV2Instruction({
-    mint: mintKey.publicKey,
+    mint: mintKey,
     name: draft.name,
     symbol: draft.symbol,
     uri,
@@ -139,27 +139,52 @@ export const buildLaunchTransactions = async (draft: LaunchDraft, mint: MintKey,
   });
   const shareIx = await sdk.PUMP_SDK.createFeeSharingConfig({
     creator: user,
-    mint: mintKey.publicKey,
+    mint: mintKey,
     pool: null,
   });
   const updateIx = await sdk.PUMP_SDK.updateFeeSharesV2({
     authority: user,
-    mint: mintKey.publicKey,
+    mint: mintKey,
     currentShareholders: [user],
     newShareholders: [{ address: vault, shareBps: 10_000 }],
     quoteMint: NATIVE_MINT,
     quoteTokenProgram: TOKEN_PROGRAM_ID,
   });
-  const { blockhash } = await connectionOf().getLatestBlockhash("confirmed");
+  const connection = connectionOf();
+  const { blockhash } = await connection.getLatestBlockhash("confirmed");
   const limit = (units: number) => ComputeBudgetProgram.setComputeUnitLimit({ units });
-  return [
-    pack([limit(400_000), createIx], user, blockhash, [mintKey]),
-    pack([limit(500_000), shareIx, updateIx], user, blockhash, []),
-  ];
+  const createTx = pack([limit(400_000), createIx], user, blockhash, []);
+  const preview = VersionedTransaction.deserialize(Buffer.from(createTx, "base64"));
+  const simulated = await connection.simulateTransaction(preview, {
+    sigVerify: false,
+    replaceRecentBlockhash: true,
+  });
+  if (simulated.value.err) {
+    logger.error("create simulation failed", { err: simulated.value.err, logs: simulated.value.logs });
+    throw new Error("The launch transaction failed simulation. Nothing was sent.");
+  }
+  return [createTx, pack([limit(500_000), shareIx, updateIx], user, blockhash, [])];
 };
 
-const sendSigned = async (encoded: string, user: PublicKey, mint: PublicKey) => {
+const addMintSignature = (tx: VersionedTransaction, mintKey: Keypair) => {
+  const keys = tx.message.staticAccountKeys;
+  const required = tx.message.header.numRequiredSignatures;
+  const index = keys.findIndex((key, i) => i < required && key.equals(mintKey.publicKey));
+  if (index < 0) {
+    return;
+  }
+  const existing = tx.signatures[index];
+  if (existing?.some((byte) => byte !== 0)) {
+    return;
+  }
+  tx.sign([mintKey]);
+};
+
+const sendSigned = async (encoded: string, user: PublicKey, mint: PublicKey, mintKey?: Keypair) => {
   const tx = VersionedTransaction.deserialize(Buffer.from(encoded, "base64"));
+  if (mintKey) {
+    addMintSignature(tx, mintKey);
+  }
   const keys = tx.message.staticAccountKeys;
   if (!keys[0]?.equals(user)) {
     throw new Error("The launch is signed by the wrong wallet.");
@@ -225,17 +250,22 @@ export const assertFeeLock = async (mintAddress: string) => {
 };
 
 export const relayLaunchTransaction = async (encoded: string, mint: MintKey, userWallet: string) =>
-  sendSigned(encoded, new PublicKey(userWallet), new PublicKey(mint.publicKey));
+  sendSigned(
+    encoded,
+    new PublicKey(userWallet),
+    new PublicKey(mint.publicKey),
+    Keypair.fromSecretKey(bs58.decode(mint.secretKey)),
+  );
 
 export const broadcastLaunch = async (encoded: string[], mint: MintKey, userWallet: string) => {
   if (encoded.length < 2) {
     throw new Error("Sign the launch in Phantom.");
   }
   const user = new PublicKey(userWallet);
-  const mintKey = new PublicKey(mint.publicKey);
+  const mintKey = Keypair.fromSecretKey(bs58.decode(mint.secretKey));
   const signatures: string[] = [];
   for (const item of encoded) {
-    signatures.push(await sendSigned(item, user, mintKey));
+    signatures.push(await sendSigned(item, user, mintKey.publicKey, mintKey));
   }
   await assertFeeLock(mint.publicKey);
   return signatures;
